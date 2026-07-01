@@ -1,0 +1,72 @@
+{
+  "name": "@aol/whatsapp-mcp",
+  "version": "1.0.0",
+  "description": "Unofficial Model Context Protocol server for WhatsApp (via Evolution API / Baileys) — read chats, send messages, manage groups and pair your own number with a QR / pairing-code login, all through AI.",
+  "type": "module",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "bin": {
+    "whatsapp-mcp": "./build/index.js"
+  },
+  "files": [
+    "build/**",
+    "assets/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "start": "node build/index.js",
+    "start:http": "node build/http-server.js",
+    "dev": "tsx watch src/http-server.ts",
+    "dev:stdio": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "whatsapp",
+    "evolution-api",
+    "baileys",
+    "ai",
+    "claude",
+    "anthropic",
+    "oauth",
+    "messaging",
+    "brazil"
+  ],
+  "author": "Ari Oliveira",
+  "license": "MIT",
+  "homepage": "https://github.com/AriOliv/whatsapp-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AriOliv/whatsapp-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AriOliv/whatsapp-mcp/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "axios": "^1.9.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.2",
+    "jose": "^5.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.15.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.3"
+  }
+}
