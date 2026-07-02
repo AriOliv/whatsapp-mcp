@@ -1,0 +1,14 @@
+node_modules
+build
+dist
+.git
+.github
+.env
+.env.*
+!.env.example
+.claude
+.DS_Store
+*.log
+scripts
+README.md
+LICENSE

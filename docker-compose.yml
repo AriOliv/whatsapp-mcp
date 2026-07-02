@@ -1,0 +1,29 @@
+services:
+  whatsapp-mcp:
+    build: .
+    container_name: whatsapp-mcp
+    restart: unless-stopped
+    ports:
+      - "3333:3333"
+    env_file:
+      - .env.docker
+    environment:
+      PORT: "3333"
+      # Reach the sibling evolution-api container by DNS name on the shared net.
+      EVO_BASE_URL: "http://evolution-api:8080"
+    networks:
+      - evoapi_net
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget -qO- http://127.0.0.1:3333/healthz | grep -q '\"ok\":true' || exit 1"
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  # Join the network created by ../evolution-api/docker-compose.yml
+  evoapi_net:
+    external: true
+    name: evolution-api_evoapi_net
