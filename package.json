@@ -1,6 +1,6 @@
 {
   "name": "@aol/whatsapp-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Unofficial Model Context Protocol server for WhatsApp (via Evolution API / Baileys) — read chats, send messages, manage groups and pair your own number with a QR / pairing-code login, all through AI.",
   "type": "module",
   "main": "build/index.js",

@@ -142,7 +142,7 @@ function makeMcpServer(
   const allowed = new Set(tools.map((t) => t.name));
 
   const mcp = new McpServer(
-    { name: "@aol/whatsapp-mcp", version: "1.0.0" },
+    { name: "@aol/whatsapp-mcp", version: "1.1.0" },
     { capabilities: { tools: {} } },
   );
   const low = mcp.server;

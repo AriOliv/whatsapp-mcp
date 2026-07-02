@@ -44,7 +44,7 @@ const USE_INSTANCE_TOOL: Tool = {
 };
 
 const mcpServer = new McpServer(
-  { name: "@aol/whatsapp-mcp", version: "1.0.0" },
+  { name: "@aol/whatsapp-mcp", version: "1.1.0" },
   { capabilities: { tools: {} } },
 );
 const server = mcpServer.server;
