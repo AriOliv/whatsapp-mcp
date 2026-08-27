@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -129,14 +130,14 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 			tokenErr(w, "invalid_client")
 			return
 		}
-		issueAndWrite(w, h.store, ac.ClientID, ac.Sub, ac.Resource, ac.Scopes)
+		issueAndWrite(r.Context(), w, h.store, ac.ClientID, ac.Sub, ac.Resource, ac.Scopes)
 	case "refresh_token":
-		rec, ok := h.store.TakeRefresh(r.Form.Get("refresh_token"))
+		rec, ok := h.store.TakeRefresh(r.Context(), r.Form.Get("refresh_token"))
 		if !ok {
 			tokenErr(w, "invalid_grant")
 			return
 		}
-		issueAndWrite(w, h.store, rec.ClientID, rec.Sub, rec.Resource, rec.Scopes)
+		issueAndWrite(r.Context(), w, h.store, rec.ClientID, rec.Sub, rec.Resource, rec.Scopes)
 	default:
 		tokenErr(w, "unsupported_grant_type")
 	}
@@ -263,8 +264,8 @@ func allowedRedirect(c *Client, redirectURI string) bool {
 	return false
 }
 
-func issueAndWrite(w http.ResponseWriter, s *Store, clientID, sub, resource string, scopes []string) {
-	toks, err := s.Issue(clientID, sub, resource, scopes)
+func issueAndWrite(ctx context.Context, w http.ResponseWriter, s *Store, clientID, sub, resource string, scopes []string) {
+	toks, err := s.Issue(ctx, clientID, sub, resource, scopes)
 	if err != nil {
 		tokenErr(w, "server_error")
 		return

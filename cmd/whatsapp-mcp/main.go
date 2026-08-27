@@ -87,8 +87,11 @@ func main() {
 			fatal(fmt.Errorf("MCP_JWT_SECRET must be set (>=32 chars) for HTTP mode"))
 		}
 		mux := http.NewServeMux()
-		store := oauth.NewStore(cfg.JWTSecret, cfg.PublicURL, cfg.PublicURL+"/mcp")
-		handlers := oauth.NewHandlers(store, mgr, cfg.PublicURL)
+		oauthStore := oauth.NewStore(cfg.JWTSecret, cfg.PublicURL, cfg.PublicURL+"/mcp", db, mgr.HasDevice)
+		if err := oauthStore.Init(ctx); err != nil {
+			fatal(err)
+		}
+		handlers := oauth.NewHandlers(oauthStore, mgr, cfg.PublicURL)
 		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 		handlers.Register(mux, mcpHandler) // mounts bearer-guarded /mcp + OAuth + login routes
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

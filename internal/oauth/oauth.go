@@ -1,15 +1,24 @@
 // Package oauth implements the OAuth 2.1 authorization-server pieces the MCP
 // HTTP transport needs: PKCE, dynamic client registration, auth-code + refresh
 // token lifecycle, and JWT access tokens whose subject is the paired WhatsApp
-// phone number. The QR/code pairing that establishes that subject lives in the
-// HTTP handlers (see server.go), which drive wa.Manager.
+// phone number.
+//
+// Persistence: refresh tokens live in Postgres so pod restarts do NOT log users
+// out (the access token is a stateless JWT verified by the stable secret, and
+// refresh survives). "Paired" is derived from the whatsmeow device store via a
+// callback, so a restart that reconnects devices keeps refresh valid. Only the
+// short-lived pending flows and auth codes stay in memory (losing them on a
+// restart at most forces retry of an in-flight authorize).
 package oauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -17,7 +26,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// TTLs mirror the original server's semantics.
 const (
 	PendingTTL = 10 * time.Minute
 	CodeTTL    = 60 * time.Second
@@ -34,8 +42,7 @@ func randHex(n int) string {
 // VerifyPKCE checks a base64url-encoded S256 challenge against a verifier.
 func VerifyPKCE(verifier, challenge string) bool {
 	sum := sha256.Sum256([]byte(verifier))
-	got := base64.RawURLEncoding.EncodeToString(sum[:])
-	return got == challenge
+	return base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
 }
 
 // ---- records ----
@@ -64,46 +71,60 @@ type AuthCode struct {
 	CodeChallenge string
 	Scopes        []string
 	Resource      string
-	Sub           string // paired phone number
+	Sub           string
 	ExpiresAt     time.Time
 }
 
 type Refresh struct {
-	Token     string
-	ClientID  string
-	Sub       string
-	Resource  string
-	Scopes    []string
-	ExpiresAt time.Time
+	Token    string
+	ClientID string
+	Sub      string
+	Resource string
+	Scopes   []string
 }
 
 // ---- store ----
 
-// Store holds all OAuth state in memory (durable state is the whatsmeow device
-// store; a lost token just means re-pair). Safe for concurrent use.
+// Store holds OAuth state. Refresh tokens are in Postgres; clients/pending/codes
+// are in memory (short-lived or cheaply re-created). hasDevice reports whether a
+// subject still has a paired WhatsApp device (used to invalidate refresh after a
+// logout).
 type Store struct {
-	mu       sync.Mutex
-	clients  map[string]*Client
-	pending  map[string]*Pending
-	codes    map[string]*AuthCode
-	refresh  map[string]*Refresh
-	paired   map[string]bool // sub -> paired (cleared on logout)
-	jwtKey   []byte
-	issuer   string
-	resource string
+	mu        sync.Mutex
+	clients   map[string]*Client
+	pending   map[string]*Pending
+	codes     map[string]*AuthCode
+	db        *sql.DB
+	hasDevice func(sub string) bool
+	jwtKey    []byte
+	issuer    string
+	resource  string
 }
 
-func NewStore(jwtSecret, issuer, resource string) *Store {
+func NewStore(jwtSecret, issuer, resource string, db *sql.DB, hasDevice func(string) bool) *Store {
 	return &Store{
-		clients:  map[string]*Client{},
-		pending:  map[string]*Pending{},
-		codes:    map[string]*AuthCode{},
-		refresh:  map[string]*Refresh{},
-		paired:   map[string]bool{},
-		jwtKey:   []byte(jwtSecret),
-		issuer:   issuer,
-		resource: resource,
+		clients:   map[string]*Client{},
+		pending:   map[string]*Pending{},
+		codes:     map[string]*AuthCode{},
+		db:        db,
+		hasDevice: hasDevice,
+		jwtKey:    []byte(jwtSecret),
+		issuer:    issuer,
+		resource:  resource,
 	}
+}
+
+// Init creates the refresh-token table.
+func (s *Store) Init(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+		token      TEXT PRIMARY KEY,
+		client_id  TEXT,
+		sub        TEXT,
+		resource   TEXT,
+		scopes     TEXT,
+		expires_at BIGINT
+	)`)
+	return err
 }
 
 // RegisterClient implements RFC 7591 dynamic client registration.
@@ -122,7 +143,6 @@ func (s *Store) Client(id string) (*Client, bool) {
 	return c, ok
 }
 
-// NewPending parks an authorize request; returns the flow id for the login page.
 func (s *Store) NewPending(p *Pending) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,7 +179,6 @@ func (s *Store) IssueCode(p *Pending, sub string) string {
 		CodeChallenge: p.CodeChallenge, Scopes: p.Scopes, Resource: p.Resource,
 		Sub: sub, ExpiresAt: time.Now().Add(CodeTTL),
 	}
-	s.paired[sub] = true
 	return code
 }
 
@@ -178,35 +197,36 @@ func (s *Store) TakeCode(code string) (*AuthCode, bool) {
 	return c, true
 }
 
-// TakeRefresh consumes a refresh token (single use + rotated by the caller).
-func (s *Store) TakeRefresh(token string) (*Refresh, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.refresh[token]
-	if !ok {
+// TakeRefresh consumes a refresh token (single use, from Postgres) and validates
+// expiry + that the subject still has a paired device.
+func (s *Store) TakeRefresh(ctx context.Context, token string) (*Refresh, bool) {
+	var r Refresh
+	var scopes string
+	var exp int64
+	row := s.db.QueryRowContext(ctx,
+		`DELETE FROM oauth_refresh_tokens WHERE token=$1
+		 RETURNING token, client_id, sub, resource, scopes, expires_at`, token)
+	if err := row.Scan(&r.Token, &r.ClientID, &r.Sub, &r.Resource, &scopes, &exp); err != nil {
 		return nil, false
 	}
-	delete(s.refresh, token)
-	if time.Now().After(r.ExpiresAt) || !s.paired[r.Sub] {
+	_ = json.Unmarshal([]byte(scopes), &r.Scopes)
+	if time.Now().UnixMilli() > exp {
 		return nil, false
 	}
-	return r, true
+	if s.hasDevice != nil && !s.hasDevice(r.Sub) {
+		return nil, false
+	}
+	return &r, true
 }
 
-func (s *Store) newRefresh(clientID, sub, resource string, scopes []string) string {
+func (s *Store) newRefresh(ctx context.Context, clientID, sub, resource string, scopes []string) (string, error) {
 	token := randHex(32)
-	s.refresh[token] = &Refresh{
-		Token: token, ClientID: clientID, Sub: sub, Resource: resource,
-		Scopes: scopes, ExpiresAt: time.Now().Add(RefreshTTL),
-	}
-	return token
-}
-
-// Unpair drops a subject (called on logout) so its refresh tokens stop working.
-func (s *Store) Unpair(sub string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.paired, sub)
+	sc, _ := json.Marshal(scopes)
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO oauth_refresh_tokens (token, client_id, sub, resource, scopes, expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		token, clientID, sub, resource, string(sc), time.Now().Add(RefreshTTL).UnixMilli())
+	return token, err
 }
 
 // Tokens is an issued token pair.
@@ -217,20 +237,16 @@ type Tokens struct {
 	Scope        string
 }
 
-// Issue mints a JWT access token (sub = phone) plus a rotated refresh token.
-func (s *Store) Issue(clientID, sub, resource string, scopes []string) (*Tokens, error) {
+// Issue mints a JWT access token (sub = phone) plus a persisted refresh token.
+func (s *Store) Issue(ctx context.Context, clientID, sub, resource string, scopes []string) (*Tokens, error) {
 	if resource == "" {
 		resource = s.resource
 	}
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"iss":       s.issuer,
-		"aud":       resource,
-		"sub":       sub,
-		"iat":       now.Unix(),
-		"exp":       now.Add(AccessTTL).Unix(),
-		"client_id": clientID,
-		"scope":     joinScopes(scopes),
+		"iss": s.issuer, "aud": resource, "sub": sub,
+		"iat": now.Unix(), "exp": now.Add(AccessTTL).Unix(),
+		"client_id": clientID, "scope": joinScopes(scopes),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tok.Header["typ"] = "at+jwt"
@@ -238,14 +254,15 @@ func (s *Store) Issue(clientID, sub, resource string, scopes []string) (*Tokens,
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	refresh := s.newRefresh(clientID, sub, resource, scopes)
-	s.mu.Unlock()
+	refresh, err := s.newRefresh(ctx, clientID, sub, resource, scopes)
+	if err != nil {
+		return nil, err
+	}
 	return &Tokens{AccessToken: access, RefreshToken: refresh, ExpiresIn: int(AccessTTL.Seconds()), Scope: joinScopes(scopes)}, nil
 }
 
 // Verify parses+validates an access token and returns its subject (phone).
-func (s *Store) Verify(token string) (sub string, err error) {
+func (s *Store) Verify(token string) (string, error) {
 	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
@@ -259,7 +276,7 @@ func (s *Store) Verify(token string) (sub string, err error) {
 	if !ok || !parsed.Valid {
 		return "", errors.New("invalid token")
 	}
-	sub, _ = claims["sub"].(string)
+	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return "", errors.New("missing sub")
 	}

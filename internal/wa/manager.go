@@ -219,6 +219,16 @@ func (m *Manager) clientFor(account string) (*whatsmeow.Client, error) {
 	return cli, nil
 }
 
+// HasDevice reports whether the given subject (phone) has a live client. Used by
+// the OAuth store so refresh tokens stay valid only while the device is paired,
+// and (crucially) so refresh survives pod restarts once LoadAndConnect has
+// reconnected the device.
+func (m *Manager) HasDevice(sub string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.clients[sub] != nil
+}
+
 // handler persists incoming messages into our store and reacts to lifecycle.
 func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 	return func(evt any) {
