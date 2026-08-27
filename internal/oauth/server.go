@@ -337,5 +337,5 @@ const loginHTML = `<!doctype html>
   }catch(e){}
   setTimeout(poll,2500);
  }
- refreshQR();setInterval(refreshQR,20000);poll();
+ refreshQR();setInterval(refreshQR,2500);poll();
 </script></body></html>`
