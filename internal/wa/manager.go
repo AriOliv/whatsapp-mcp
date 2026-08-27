@@ -38,6 +38,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	clients map[string]*whatsmeow.Client // key: account JID (user part @ server)
 	def     string                       // default account key (stdio)
+	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
 }
 
 // New opens the whatsmeow sqlstore, sharing the app's *sql.DB, and sets the
@@ -67,6 +68,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		store:     st,
 		log:       logger,
 		clients:   map[string]*whatsmeow.Client{},
+		flows:     map[string]*PairFlow{},
 	}, nil
 }
 

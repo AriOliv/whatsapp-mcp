@@ -17,6 +17,7 @@ import (
 
 	"github.com/AriOliv/whatsapp-mcp/internal/config"
 	"github.com/AriOliv/whatsapp-mcp/internal/mcpserver"
+	"github.com/AriOliv/whatsapp-mcp/internal/oauth"
 	"github.com/AriOliv/whatsapp-mcp/internal/store"
 	"github.com/AriOliv/whatsapp-mcp/internal/wa"
 )
@@ -82,16 +83,21 @@ func main() {
 
 	switch cfg.Mode {
 	case config.ModeHTTP:
+		if len(cfg.JWTSecret) < 32 {
+			fatal(fmt.Errorf("MCP_JWT_SECRET must be set (>=32 chars) for HTTP mode"))
+		}
 		mux := http.NewServeMux()
-		mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
+		store := oauth.NewStore(cfg.JWTSecret, cfg.PublicURL, cfg.PublicURL+"/mcp")
+		handlers := oauth.NewHandlers(store, mgr, cfg.PublicURL)
+		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+		handlers.Register(mux, mcpHandler) // mounts bearer-guarded /mcp + OAuth + login routes
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("content-type", "application/json")
 			fmt.Fprintf(w, `{"ok":true,"accounts":%d}`, n)
 		})
-		// TODO(phase 4): OAuth 2.1 (authorize/token/register) + QR login page + bearer guard on /mcp.
 		httpSrv := &http.Server{Addr: ":" + cfg.Port, Handler: mux}
 		go func() { <-ctx.Done(); _ = httpSrv.Close() }()
-		fmt.Fprintf(os.Stderr, "HTTP MCP on :%s/mcp\n", cfg.Port)
+		fmt.Fprintf(os.Stderr, "HTTP MCP (OAuth) on %s/mcp\n", cfg.PublicURL)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fatal(err)
 		}
