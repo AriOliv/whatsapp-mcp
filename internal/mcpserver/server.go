@@ -6,6 +6,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -203,10 +204,20 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			res, err := mgr.InstanceState(ctx, acct(ctx))
 			return done(res, err)
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_list", Description: "List linked account JIDs."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_list", Description: "List the caller's own linked account JID(s)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
-			res, err := mgr.ListDevices(ctx)
-			return done(res, err)
+			all, err := mgr.ListDevices(ctx)
+			// Multi-tenant: never leak other tenants' JIDs — scope to the caller.
+			if a := acct(ctx); a != "" {
+				mine := []string{}
+				for _, j := range all {
+					if strings.HasPrefix(j, a+":") || strings.HasPrefix(j, a+"@") {
+						mine = append(mine, j)
+					}
+				}
+				return done(mine, err)
+			}
+			return done(all, err)
 		})
 	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_logout", Description: "Unlink (log out) the account's device."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
