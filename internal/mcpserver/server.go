@@ -159,6 +159,60 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			return done(map[string]bool{"ok": err == nil}, err)
 		})
 
+	// --- profile / privacy / block ---
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_participants", Description: "List a group's participants."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in groupJidArgs) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.GroupParticipants(ctx, "", in.GroupJID)
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_fetch_profile", Description: "Fetch a number's profile (name/status)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in numberArg) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.FetchProfile(ctx, "", in.Number)
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_fetch_business_profile", Description: "Fetch a number's WhatsApp Business profile."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in numberArg) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.FetchBusinessProfile(ctx, "", in.Number)
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_profile_picture_url", Description: "Get a contact's profile picture URL."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in numberArg) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.ProfilePictureURL(ctx, "", in.Number)
+			return done(map[string]string{"url": res}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_get_privacy", Description: "Get the account's privacy settings."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.GetPrivacy(ctx, "")
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_update_profile_status", Description: "Set the account's About/status text."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in statusArg) (*mcp.CallToolResult, any, error) {
+			err := mgr.UpdateProfileStatus(ctx, "", in.Status)
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_block_contact", Description: "Block or unblock a number (status: block|unblock)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in blockArgs) (*mcp.CallToolResult, any, error) {
+			err := mgr.BlockContact(ctx, "", in.Number, in.Status)
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+
+	// --- account / lifecycle ---
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_state", Description: "Connection/login state of the account."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.InstanceState(ctx, "")
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_list", Description: "List linked account JIDs."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.ListDevices(ctx)
+			return done(res, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_instance_logout", Description: "Unlink (log out) the account's device."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
+			err := mgr.Logout(ctx, "")
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+
 	return s
 }
 
@@ -288,4 +342,17 @@ type markReadArgs struct {
 	RemoteJID string   `json:"remoteJid"`
 	Sender    string   `json:"sender,omitempty"`
 	IDs       []string `json:"ids"`
+}
+
+type numberArg struct {
+	Number string `json:"number"`
+}
+
+type statusArg struct {
+	Status string `json:"status"`
+}
+
+type blockArgs struct {
+	Number string `json:"number"`
+	Status string `json:"status" jsonschema:"block|unblock"`
 }

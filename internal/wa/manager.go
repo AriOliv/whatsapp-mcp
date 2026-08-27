@@ -704,6 +704,149 @@ func onlyDigits(s string) string {
 	}, s)
 }
 
+// GroupParticipants returns a group's participant list.
+func (m *Manager) GroupParticipants(ctx context.Context, account, groupJID string) ([]types.GroupParticipant, error) {
+	info, err := m.GroupInfo(ctx, account, groupJID)
+	if err != nil {
+		return nil, err
+	}
+	return info.Participants, nil
+}
+
+// FetchProfile returns basic user info for a number.
+func (m *Manager) FetchProfile(ctx context.Context, account, number string) (map[types.JID]types.UserInfo, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	jid, err := resolveJID(number)
+	if err != nil {
+		return nil, err
+	}
+	return cli.GetUserInfo(ctx, []types.JID{jid})
+}
+
+// FetchBusinessProfile returns a number's WhatsApp Business profile.
+func (m *Manager) FetchBusinessProfile(ctx context.Context, account, number string) (*types.BusinessProfile, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	jid, err := resolveJID(number)
+	if err != nil {
+		return nil, err
+	}
+	return cli.GetBusinessProfile(ctx, jid)
+}
+
+// ProfilePictureURL returns a contact's profile picture URL.
+func (m *Manager) ProfilePictureURL(ctx context.Context, account, number string) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	jid, err := resolveJID(number)
+	if err != nil {
+		return "", err
+	}
+	info, err := cli.GetProfilePictureInfo(ctx, jid, nil)
+	if err != nil {
+		return "", err
+	}
+	if info == nil {
+		return "", nil
+	}
+	return info.URL, nil
+}
+
+// GetPrivacy returns the account's privacy settings.
+func (m *Manager) GetPrivacy(ctx context.Context, account string) (types.PrivacySettings, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return types.PrivacySettings{}, err
+	}
+	return cli.GetPrivacySettings(ctx), nil
+}
+
+// UpdateProfileStatus sets the account's "about" text.
+func (m *Manager) UpdateProfileStatus(ctx context.Context, account, status string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	return cli.SetStatusMessage(ctx, types.SetStatusInput{Text: proto.String(status)})
+}
+
+// BlockContact blocks or unblocks a number.
+func (m *Manager) BlockContact(ctx context.Context, account, number, action string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	jid, err := resolveJID(number)
+	if err != nil {
+		return err
+	}
+	var act events.BlocklistChangeAction
+	switch action {
+	case "block":
+		act = events.BlocklistChangeActionBlock
+	case "unblock":
+		act = events.BlocklistChangeActionUnblock
+	default:
+		return fmt.Errorf("action must be block|unblock")
+	}
+	_, err = cli.UpdateBlocklist(ctx, jid, act)
+	return err
+}
+
+// InstanceState reports connection/login state of an account.
+func (m *Manager) InstanceState(ctx context.Context, account string) (map[string]any, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	jid := ""
+	if cli.Store.ID != nil {
+		jid = cli.Store.ID.String()
+	}
+	return map[string]any{"jid": jid, "connected": cli.IsConnected(), "loggedIn": cli.IsLoggedIn()}, nil
+}
+
+// Logout unlinks the account's device.
+func (m *Manager) Logout(ctx context.Context, account string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	if err := cli.Logout(ctx); err != nil {
+		return err
+	}
+	key := accountKey(cli.Store.ID)
+	m.mu.Lock()
+	delete(m.clients, key)
+	if m.def == key {
+		m.def = ""
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+// ListDevices lists the linked-account JIDs known to the store.
+func (m *Manager) ListDevices(ctx context.Context) ([]string, error) {
+	devices, err := m.container.GetAllDevices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if d.ID != nil {
+			out = append(out, d.ID.String())
+		}
+	}
+	return out, nil
+}
+
 // ListChats / ListMessages delegate to our store.
 func (m *Manager) ListChats(ctx context.Context, account string, limit int) ([]appstore.Chat, error) {
 	return m.store.ListChats(ctx, m.acct(account), limit)
