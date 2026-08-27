@@ -1,7 +1,6 @@
 // Package mcpserver builds the MCP server and registers the WhatsApp tools.
-// Tool names keep the evo_* prefix from the original server so the swap is a
-// drop-in for existing Studio connections / agents (the backend changes, the
-// tool contract does not).
+// Tools are named whatsapp_* and map directly to whatsmeow calls — there is no
+// Evolution API in the loop.
 package mcpserver
 
 import (
@@ -18,96 +17,145 @@ func Build(mgr *wa.Manager) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "whatsapp-mcp", Version: "2.0.0-whatsmeow"}, nil)
 
 	// --- messaging ---
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_send_text", Description: "Send a WhatsApp text message."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_text", Description: "Send a WhatsApp text message."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in sendTextArgs) (*mcp.CallToolResult, any, error) {
 			id, err := mgr.SendText(ctx, "", in.Number, in.Text)
 			return done(map[string]string{"id": id}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_send_media", Description: "Send an image/video/document (URL or base64)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_media", Description: "Send an image/video/document (URL or base64)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in sendMediaArgs) (*mcp.CallToolResult, any, error) {
 			id, err := mgr.SendMedia(ctx, "", in.Number, in.Mediatype, in.Media, in.Caption, in.Mimetype, in.FileName)
 			return done(map[string]string{"id": id}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_send_audio", Description: "Send a voice/audio message (URL or base64)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_audio", Description: "Send a voice/audio message (URL or base64)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in sendAudioArgs) (*mcp.CallToolResult, any, error) {
 			id, err := mgr.SendMedia(ctx, "", in.Number, "audio", in.Audio, "", "", "")
 			return done(map[string]string{"id": id}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_send_reaction", Description: "React to a message with an emoji (empty removes)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_reaction", Description: "React to a message with an emoji (empty removes)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in reactionArgs) (*mcp.CallToolResult, any, error) {
 			id, err := mgr.React(ctx, "", in.Key.RemoteJID, in.Key.RemoteJID, in.Key.ID, in.Reaction)
 			return done(map[string]string{"id": id}, err)
 		})
 
 	// --- contacts / numbers ---
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_check_numbers", Description: "Check which numbers are registered on WhatsApp."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_check_numbers", Description: "Check which numbers are registered on WhatsApp."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in checkNumbersArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.CheckNumbers(ctx, "", in.Numbers)
 			return done(res, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_find_contacts", Description: "List stored contacts for the account."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_find_contacts", Description: "List stored contacts for the account."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.Contacts(ctx, "")
 			return done(res, err)
 		})
 
 	// --- chats & messages (our own store) ---
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_find_chats", Description: "List recent conversations (from local history)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_find_chats", Description: "List recent conversations (from local history)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listChatsArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.ListChats(ctx, "", in.Limit)
 			return done(res, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_find_messages", Description: "List messages in a chat (from local history)."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_find_messages", Description: "List messages in a chat (from local history)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listMessagesArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.ListMessages(ctx, "", in.RemoteJID, in.Limit)
 			return done(res, err)
 		})
 
 	// --- groups ---
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_fetch_all", Description: "Fetch all joined groups."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_fetch_all", Description: "Fetch all joined groups."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.Groups(ctx, "")
 			return done(res, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_info", Description: "Get info for one group by JID."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_info", Description: "Get info for one group by JID."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupJidArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.GroupInfo(ctx, "", in.GroupJID)
 			return done(res, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_create", Description: "Create a group with participants."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_create", Description: "Create a group with participants."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupCreateArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.CreateGroup(ctx, "", in.Subject, in.Participants)
 			return done(res, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_invite_code", Description: "Get a group's invite link."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_invite_code", Description: "Get a group's invite link."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupJidArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.InviteLink(ctx, "", in.GroupJID, false)
 			return done(map[string]string{"inviteLink": res}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_update_participant", Description: "Add/remove/promote/demote group members."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_update_participant", Description: "Add/remove/promote/demote group members."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupParticipantsArgs) (*mcp.CallToolResult, any, error) {
 			err := mgr.UpdateParticipants(ctx, "", in.GroupJID, in.Action, in.Participants)
 			return done(map[string]bool{"ok": err == nil}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_update_subject", Description: "Change a group's subject/name."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_update_subject", Description: "Change a group's subject/name."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupSubjectArgs) (*mcp.CallToolResult, any, error) {
 			err := mgr.SetGroupName(ctx, "", in.GroupJID, in.Subject)
 			return done(map[string]bool{"ok": err == nil}, err)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "evo_group_leave", Description: "Leave a group."},
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_group_leave", Description: "Leave a group."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in groupJidArgs) (*mcp.CallToolResult, any, error) {
 			err := mgr.LeaveGroup(ctx, "", in.GroupJID)
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+
+	// --- messaging extras ---
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_sticker", Description: "Send a sticker (webp, URL or base64)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendStickerArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.SendSticker(ctx, "", in.Number, in.Sticker)
+			return done(map[string]string{"id": id}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_location", Description: "Send a location pin."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendLocationArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.SendLocation(ctx, "", in.Number, in.Latitude, in.Longitude, in.Name, in.Address)
+			return done(map[string]string{"id": id}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_contact", Description: "Send a contact card."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendContactArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.SendContact(ctx, "", in.Number, in.FullName, in.PhoneNumber)
+			return done(map[string]string{"id": id}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_poll", Description: "Send a poll."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendPollArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.SendPoll(ctx, "", in.Number, in.Name, in.Values, in.SelectableCount)
+			return done(map[string]string{"id": id}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_delete_message", Description: "Delete a message for everyone (revoke)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in deleteMessageArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.DeleteMessage(ctx, "", in.RemoteJID, in.ID)
+			return done(map[string]string{"id": id}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_update_message", Description: "Edit a sent text message."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in updateMessageArgs) (*mcp.CallToolResult, any, error) {
+			id, err := mgr.EditMessage(ctx, "", in.RemoteJID, in.ID, in.Text)
+			return done(map[string]string{"id": id}, err)
+		})
+
+	// --- presence / read ---
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_set_presence", Description: "Set global presence (available|unavailable)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in setPresenceArgs) (*mcp.CallToolResult, any, error) {
+			err := mgr.SetPresence(ctx, "", in.Presence)
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_send_chat_presence", Description: "Send typing/recording indicator (composing|recording|paused)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in chatPresenceArgs) (*mcp.CallToolResult, any, error) {
+			err := mgr.ChatPresence(ctx, "", in.Number, in.Presence)
+			return done(map[string]bool{"ok": err == nil}, err)
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_mark_read", Description: "Mark messages as read in a chat."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in markReadArgs) (*mcp.CallToolResult, any, error) {
+			err := mgr.MarkRead(ctx, "", in.RemoteJID, in.Sender, in.IDs)
 			return done(map[string]bool{"ok": err == nil}, err)
 		})
 
@@ -123,7 +171,7 @@ func done(v any, err error) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
 }
 
-// ---- argument structs (param names mirror the original evo_* contract) ----
+// ---- argument structs ----
 
 type emptyArgs struct{}
 
@@ -188,4 +236,56 @@ type groupParticipantsArgs struct {
 type groupSubjectArgs struct {
 	GroupJID string `json:"groupJid"`
 	Subject  string `json:"subject"`
+}
+
+type sendStickerArgs struct {
+	Number  string `json:"number"`
+	Sticker string `json:"sticker" jsonschema:"URL or base64 webp"`
+}
+
+type sendLocationArgs struct {
+	Number    string  `json:"number"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Name      string  `json:"name,omitempty"`
+	Address   string  `json:"address,omitempty"`
+}
+
+type sendContactArgs struct {
+	Number      string `json:"number"`
+	FullName    string `json:"fullName"`
+	PhoneNumber string `json:"phoneNumber"`
+}
+
+type sendPollArgs struct {
+	Number          string   `json:"number"`
+	Name            string   `json:"name"`
+	SelectableCount int      `json:"selectableCount"`
+	Values          []string `json:"values"`
+}
+
+type deleteMessageArgs struct {
+	RemoteJID string `json:"remoteJid"`
+	ID        string `json:"id"`
+}
+
+type updateMessageArgs struct {
+	RemoteJID string `json:"remoteJid"`
+	ID        string `json:"id"`
+	Text      string `json:"text"`
+}
+
+type setPresenceArgs struct {
+	Presence string `json:"presence" jsonschema:"available|unavailable"`
+}
+
+type chatPresenceArgs struct {
+	Number   string `json:"number"`
+	Presence string `json:"presence" jsonschema:"composing|recording|paused"`
+}
+
+type markReadArgs struct {
+	RemoteJID string   `json:"remoteJid"`
+	Sender    string   `json:"sender,omitempty"`
+	IDs       []string `json:"ids"`
 }

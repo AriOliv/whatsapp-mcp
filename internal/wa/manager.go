@@ -17,6 +17,7 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
+	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -48,6 +49,9 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 	// which is sent during pairing. Must be set before creating clients.
 	if deviceName != "" {
 		store.DeviceProps.Os = proto.String(deviceName)
+		// PlatformType must be a recognized value or WhatsApp shows "Other Device"
+		// instead of our Os string. CHROME mirrors what Baileys/Evolution do.
+		store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
 	}
 
 	dialect := "sqlite3" // dbutil dialect for a modernc "sqlite" *sql.DB
@@ -136,6 +140,63 @@ func (m *Manager) PairInteractive(ctx context.Context) error {
 			return nil
 		case "timeout":
 			return fmt.Errorf("pairing timed out")
+		case "error":
+			return fmt.Errorf("pairing error: %w", evt.Error)
+		}
+	}
+	return fmt.Errorf("pairing channel closed")
+}
+
+// PairWithCode pairs via an 8-digit phone code (WhatsApp → Linked devices →
+// "Link with phone number instead"). onCode is called once with the code so the
+// caller can surface it. Blocks until paired, timeout, or ctx cancel. `number`
+// is an international number (any punctuation is stripped).
+func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(string)) error {
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, number)
+	if digits == "" {
+		return fmt.Errorf("invalid phone number %q", number)
+	}
+	dev := m.container.NewDevice()
+	cli := whatsmeow.NewClient(dev, m.log)
+	qrChan, err := cli.GetQRChannel(ctx)
+	if err != nil {
+		return fmt.Errorf("qr channel: %w", err)
+	}
+	if err := cli.Connect(); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	requested := false
+	for evt := range qrChan {
+		switch evt.Event {
+		case "code":
+			if !requested {
+				requested = true
+				code, err := cli.PairPhone(ctx, digits, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+				if err != nil {
+					return fmt.Errorf("pair phone: %w", err)
+				}
+				if onCode != nil {
+					onCode(code)
+				}
+			}
+		case "success":
+			cli.AddEventHandler(m.handler(cli))
+			key := accountKey(cli.Store.ID)
+			m.mu.Lock()
+			m.clients[key] = cli
+			if m.def == "" {
+				m.def = key
+			}
+			m.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "\nPaired as %s\n", key)
+			return nil
+		case "timeout":
+			return fmt.Errorf("pairing timed out (code expired) — try again")
 		case "error":
 			return fmt.Errorf("pairing error: %w", evt.Error)
 		}
@@ -434,6 +495,215 @@ func (m *Manager) LeaveGroup(ctx context.Context, account, groupJID string) erro
 	return cli.LeaveGroup(ctx, jid)
 }
 
+// SendSticker sends a webp sticker (URL or base64).
+func (m *Manager) SendSticker(ctx context.Context, account, to, data string) (string, error) {
+	cli, jid, raw, err := m.prep(ctx, account, to, data)
+	if err != nil {
+		return "", err
+	}
+	up, err := cli.Upload(ctx, raw, whatsmeow.MediaImage)
+	if err != nil {
+		return "", fmt.Errorf("upload: %w", err)
+	}
+	msg := &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+		Mimetype: proto.String("image/webp"),
+		URL:      &up.URL, DirectPath: &up.DirectPath, MediaKey: up.MediaKey,
+		FileEncSHA256: up.FileEncSHA256, FileSHA256: up.FileSHA256, FileLength: &up.FileLength,
+	}}
+	resp, err := cli.SendMessage(ctx, jid, msg)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// SendLocation sends a location pin.
+func (m *Manager) SendLocation(ctx context.Context, account, to string, lat, lon float64, name, address string) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return "", err
+	}
+	resp, err := cli.SendMessage(ctx, jid, &waE2E.Message{LocationMessage: &waE2E.LocationMessage{
+		DegreesLatitude: proto.Float64(lat), DegreesLongitude: proto.Float64(lon),
+		Name: strPtrOrNil(name), Address: strPtrOrNil(address),
+	}})
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// SendContact sends a single contact card.
+func (m *Manager) SendContact(ctx context.Context, account, to, fullName, phone string) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return "", err
+	}
+	waid := onlyDigits(phone)
+	vcard := fmt.Sprintf("BEGIN:VCARD\nVERSION:3.0\nFN:%s\nTEL;type=CELL;type=VOICE;waid=%s:%s\nEND:VCARD", fullName, waid, phone)
+	resp, err := cli.SendMessage(ctx, jid, &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
+		DisplayName: proto.String(fullName), Vcard: proto.String(vcard),
+	}})
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// SendPoll sends a poll.
+func (m *Manager) SendPoll(ctx context.Context, account, to, name string, options []string, selectable int) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return "", err
+	}
+	if selectable <= 0 {
+		selectable = 1
+	}
+	resp, err := cli.SendMessage(ctx, jid, cli.BuildPollCreation(name, options, selectable))
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// DeleteMessage revokes (deletes for everyone) one of our own messages.
+func (m *Manager) DeleteMessage(ctx context.Context, account, chat, msgID string) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	chatJID, err := resolveJID(chat)
+	if err != nil {
+		return "", err
+	}
+	own := types.EmptyJID
+	if cli.Store.ID != nil {
+		own = *cli.Store.ID
+	}
+	resp, err := cli.SendMessage(ctx, chatJID, cli.BuildRevoke(chatJID, own, types.MessageID(msgID)))
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// EditMessage edits the text of one of our own messages.
+func (m *Manager) EditMessage(ctx context.Context, account, chat, msgID, newText string) (string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return "", err
+	}
+	chatJID, err := resolveJID(chat)
+	if err != nil {
+		return "", err
+	}
+	newMsg := &waE2E.Message{Conversation: proto.String(newText)}
+	resp, err := cli.SendMessage(ctx, chatJID, cli.BuildEdit(chatJID, types.MessageID(msgID), newMsg))
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+// SetPresence sets global presence: available | unavailable.
+func (m *Manager) SetPresence(ctx context.Context, account, presence string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	switch presence {
+	case "available":
+		return cli.SendPresence(ctx, types.PresenceAvailable)
+	case "unavailable":
+		return cli.SendPresence(ctx, types.PresenceUnavailable)
+	default:
+		return fmt.Errorf("presence must be available|unavailable")
+	}
+}
+
+// ChatPresence sends a typing/recording indicator to a chat.
+func (m *Manager) ChatPresence(ctx context.Context, account, to, state string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case "composing":
+		return cli.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	case "recording":
+		return cli.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaAudio)
+	case "paused":
+		return cli.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	default:
+		return fmt.Errorf("state must be composing|recording|paused")
+	}
+}
+
+// MarkRead marks messages as read in a chat.
+func (m *Manager) MarkRead(ctx context.Context, account, chat, sender string, ids []string) error {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return err
+	}
+	chatJID, err := resolveJID(chat)
+	if err != nil {
+		return err
+	}
+	senderJID := chatJID
+	if sender != "" {
+		if senderJID, err = resolveJID(sender); err != nil {
+			return err
+		}
+	}
+	msgIDs := make([]types.MessageID, 0, len(ids))
+	for _, s := range ids {
+		msgIDs = append(msgIDs, types.MessageID(s))
+	}
+	return cli.MarkRead(ctx, msgIDs, time.Now(), chatJID, senderJID)
+}
+
+// prep resolves the client + JID and loads media bytes in one shot.
+func (m *Manager) prep(ctx context.Context, account, to, data string) (*whatsmeow.Client, types.JID, []byte, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return nil, types.JID{}, nil, err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return nil, types.JID{}, nil, err
+	}
+	raw, err := loadBytes(ctx, data)
+	if err != nil {
+		return nil, types.JID{}, nil, err
+	}
+	return cli, jid, raw, nil
+}
+
+func onlyDigits(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // ListChats / ListMessages delegate to our store.
 func (m *Manager) ListChats(ctx context.Context, account string, limit int) ([]appstore.Chat, error) {
 	return m.store.ListChats(ctx, m.acct(account), limit)
@@ -538,4 +808,32 @@ func orDefault(s, def string) string {
 	return s
 }
 
-var _ = time.Now // reserved for presence/mark-read helpers (phase 2b)
+// DefaultNumber returns the default (stdio) account's phone number, or "".
+func (m *Manager) DefaultNumber() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if cli := m.clients[m.def]; cli != nil && cli.Store.ID != nil {
+		return cli.Store.ID.User
+	}
+	return ""
+}
+
+// WaitReady blocks until the default client is logged in and connected, or the
+// timeout elapses.
+func (m *Manager) WaitReady(ctx context.Context, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		cli := m.clients[m.def]
+		m.mu.RUnlock()
+		if cli != nil && cli.IsConnected() && cli.IsLoggedIn() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return false
+}

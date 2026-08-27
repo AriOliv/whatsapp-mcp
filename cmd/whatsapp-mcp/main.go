@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -43,6 +44,31 @@ func main() {
 		if err := mgr.PairInteractive(ctx); err != nil {
 			fatal(err)
 		}
+		return
+	}
+
+	// `whatsapp-mcp pair-code <number>` → phone-code pairing + a self send/receive
+	// smoke test, then exit.
+	if len(os.Args) > 2 && os.Args[1] == "pair-code" {
+		if err := mgr.PairWithCode(ctx, os.Args[2], func(code string) {
+			fmt.Printf("PAIRING_CODE=%s\n", code)
+			fmt.Fprintf(os.Stderr, "\n=== WhatsApp → Linked devices → Link with phone number → enter: %s ===\n", code)
+		}); err != nil {
+			fatal(err)
+		}
+		if !mgr.WaitReady(ctx, 30*time.Second) {
+			fmt.Fprintln(os.Stderr, "warning: client not fully ready after 30s")
+		}
+		own := mgr.DefaultNumber()
+		id, serr := mgr.SendText(ctx, "", own, "✅ Smoke test: whatsmeow MCP pareado — enviando e recebendo (Avenia).")
+		if serr != nil {
+			fmt.Printf("SEND_ERROR=%v\n", serr)
+		} else {
+			fmt.Printf("SENT id=%s to=%s\n", id, own)
+		}
+		time.Sleep(4 * time.Second) // let the echo arrive and be stored
+		chats, _ := mgr.ListChats(ctx, "", 10)
+		fmt.Printf("STORED_CHATS=%d\n", len(chats))
 		return
 	}
 
