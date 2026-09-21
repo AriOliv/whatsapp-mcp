@@ -41,7 +41,9 @@ type Manager struct {
 	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
 
 	groupMu    sync.Mutex
-	groupCache map[string]cachedGroupNames // key: account JID string; group subjects for ListChats
+	groupCache map[string]cachedNames // account JID -> joined-group subjects (ListChats)
+	nlMu       sync.Mutex
+	nlCache    map[string]cachedNames // account JID -> subscribed-newsletter names (ListChats)
 }
 
 // New opens the whatsmeow sqlstore, sharing the app's *sql.DB, and sets the
@@ -72,7 +74,8 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		log:        logger,
 		clients:    map[string]*whatsmeow.Client{},
 		flows:      map[string]*PairFlow{},
-		groupCache: map[string]cachedGroupNames{},
+		groupCache: map[string]cachedNames{},
+		nlCache:    map[string]cachedNames{},
 	}, nil
 }
 
@@ -893,13 +896,13 @@ func (m *Manager) acct(account string) string {
 	return m.def
 }
 
-// groupNameTTL bounds how often ListChats refreshes joined-group subjects:
-// GetJoinedGroups is a network round-trip that returns every group.
+// groupNameTTL bounds how often ListChats refreshes joined-group subjects and
+// subscribed-newsletter names: each is a network round-trip that returns all.
 const groupNameTTL = 5 * time.Minute
 
-type cachedGroupNames struct {
+type cachedNames struct {
 	at    time.Time
-	names map[string]string // group JID string -> subject
+	names map[string]string // JID string -> display name
 }
 
 // fillChatNames resolves a display name for every chat that has none. It is
@@ -907,7 +910,7 @@ type cachedGroupNames struct {
 // failing the whole listing. Groups use joined-group subjects (cached);
 // individuals use the whatsmeow contact store; status/newsletter are special.
 func (m *Manager) fillChatNames(ctx context.Context, account string, chats []appstore.Chat) {
-	needGroup, needOther := false, false
+	needGroup, needNewsletter, needOther := false, false, false
 	for i := range chats {
 		if chats[i].Name != "" {
 			continue
@@ -915,22 +918,27 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 		switch {
 		case strings.HasSuffix(chats[i].JID, "@g.us"):
 			needGroup = true
-		case chats[i].JID == "status@broadcast", strings.HasSuffix(chats[i].JID, "@newsletter"):
+		case strings.HasSuffix(chats[i].JID, "@newsletter"):
+			needNewsletter = true
+		case chats[i].JID == "status@broadcast":
 			// handled without a lookup
 		default:
 			needOther = true
 		}
 	}
-	if !needGroup && !needOther {
+	if !needGroup && !needNewsletter && !needOther {
 		return
 	}
 	cli, err := m.clientFor(account)
 	if err != nil {
 		return // not connected: leave names empty rather than error the listing
 	}
-	var groups map[string]string
+	var groups, newsletters map[string]string
 	if needGroup {
 		groups = m.groupNames(ctx, account, cli)
+	}
+	if needNewsletter {
+		newsletters = m.newsletterNames(ctx, account, cli)
 	}
 	for i := range chats {
 		c := &chats[i]
@@ -940,10 +948,10 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 		switch {
 		case strings.HasSuffix(c.JID, "@g.us"):
 			c.Name = groups[c.JID]
+		case strings.HasSuffix(c.JID, "@newsletter"):
+			c.Name = newsletters[c.JID]
 		case c.JID == "status@broadcast":
 			c.Name = "Status"
-		case strings.HasSuffix(c.JID, "@newsletter"):
-			// newsletter name isn't in the contact/group stores; leave as-is
 		default:
 			jid, err := types.ParseJID(c.JID)
 			if err != nil {
@@ -998,8 +1006,43 @@ func (m *Manager) groupNames(ctx context.Context, account string, cli *whatsmeow
 		names[g.JID.String()] = g.Name
 	}
 	m.groupMu.Lock()
-	m.groupCache[key] = cachedGroupNames{at: time.Now(), names: names}
+	m.groupCache[key] = cachedNames{at: time.Now(), names: names}
 	m.groupMu.Unlock()
+	return names
+}
+
+// newsletterNames returns a JID->name map for the account's subscribed
+// newsletters (channels), cached for groupNameTTL so find_chats doesn't pay a
+// GetSubscribedNewsletters round-trip on every call. Falls back to any stale
+// cache on failure.
+func (m *Manager) newsletterNames(ctx context.Context, account string, cli *whatsmeow.Client) map[string]string {
+	key := m.acct(account)
+
+	m.nlMu.Lock()
+	if cn, ok := m.nlCache[key]; ok && time.Since(cn.at) < groupNameTTL {
+		m.nlMu.Unlock()
+		return cn.names
+	}
+	m.nlMu.Unlock()
+
+	list, err := cli.GetSubscribedNewsletters(ctx)
+	if err != nil {
+		m.nlMu.Lock()
+		defer m.nlMu.Unlock()
+		if cn, ok := m.nlCache[key]; ok {
+			return cn.names // stale is better than nothing
+		}
+		return map[string]string{}
+	}
+	names := make(map[string]string, len(list))
+	for _, nl := range list {
+		if nl != nil {
+			names[nl.ID.String()] = nl.ThreadMeta.Name.Text
+		}
+	}
+	m.nlMu.Lock()
+	m.nlCache[key] = cachedNames{at: time.Now(), names: names}
+	m.nlMu.Unlock()
 	return names
 }
 
