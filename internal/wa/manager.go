@@ -39,6 +39,9 @@ type Manager struct {
 	clients map[string]*whatsmeow.Client // key: account JID (user part @ server)
 	def     string                       // default account key (stdio)
 	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
+
+	groupMu    sync.Mutex
+	groupCache map[string]cachedGroupNames // key: account JID string; group subjects for ListChats
 }
 
 // New opens the whatsmeow sqlstore, sharing the app's *sql.DB, and sets the
@@ -64,11 +67,12 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		return nil, fmt.Errorf("whatsmeow store upgrade: %w", err)
 	}
 	return &Manager{
-		container: container,
-		store:     st,
-		log:       logger,
-		clients:   map[string]*whatsmeow.Client{},
-		flows:     map[string]*PairFlow{},
+		container:  container,
+		store:      st,
+		log:        logger,
+		clients:    map[string]*whatsmeow.Client{},
+		flows:      map[string]*PairFlow{},
+		groupCache: map[string]cachedGroupNames{},
 	}, nil
 }
 
@@ -859,9 +863,17 @@ func (m *Manager) ListDevices(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// ListChats / ListMessages delegate to our store.
+// ListChats / ListMessages delegate to our store. ListChats additionally
+// resolves a display name for each chat — the store only records JIDs — using
+// joined-group subjects (cached) for groups and the contact store for
+// individuals.
 func (m *Manager) ListChats(ctx context.Context, account string, limit int) ([]appstore.Chat, error) {
-	return m.store.ListChats(ctx, m.acct(account), limit)
+	chats, err := m.store.ListChats(ctx, m.acct(account), limit)
+	if err != nil {
+		return nil, err
+	}
+	m.fillChatNames(ctx, account, chats)
+	return chats, nil
 }
 
 func (m *Manager) ListMessages(ctx context.Context, account, chatJID string, limit int) ([]appstore.Message, error) {
@@ -879,6 +891,116 @@ func (m *Manager) acct(account string) string {
 		return cli.Store.ID.String()
 	}
 	return m.def
+}
+
+// groupNameTTL bounds how often ListChats refreshes joined-group subjects:
+// GetJoinedGroups is a network round-trip that returns every group.
+const groupNameTTL = 5 * time.Minute
+
+type cachedGroupNames struct {
+	at    time.Time
+	names map[string]string // group JID string -> subject
+}
+
+// fillChatNames resolves a display name for every chat that has none. It is
+// best-effort: any lookup failure leaves that chat's name empty rather than
+// failing the whole listing. Groups use joined-group subjects (cached);
+// individuals use the whatsmeow contact store; status/newsletter are special.
+func (m *Manager) fillChatNames(ctx context.Context, account string, chats []appstore.Chat) {
+	needGroup, needOther := false, false
+	for i := range chats {
+		if chats[i].Name != "" {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(chats[i].JID, "@g.us"):
+			needGroup = true
+		case chats[i].JID == "status@broadcast", strings.HasSuffix(chats[i].JID, "@newsletter"):
+			// handled without a lookup
+		default:
+			needOther = true
+		}
+	}
+	if !needGroup && !needOther {
+		return
+	}
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return // not connected: leave names empty rather than error the listing
+	}
+	var groups map[string]string
+	if needGroup {
+		groups = m.groupNames(ctx, account, cli)
+	}
+	for i := range chats {
+		c := &chats[i]
+		if c.Name != "" {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(c.JID, "@g.us"):
+			c.Name = groups[c.JID]
+		case c.JID == "status@broadcast":
+			c.Name = "Status"
+		case strings.HasSuffix(c.JID, "@newsletter"):
+			// newsletter name isn't in the contact/group stores; leave as-is
+		default:
+			jid, err := types.ParseJID(c.JID)
+			if err != nil {
+				continue
+			}
+			if info, err := cli.Store.Contacts.GetContact(ctx, jid); err == nil {
+				c.Name = bestContactName(info)
+			}
+		}
+	}
+}
+
+// bestContactName picks the most human name from a whatsmeow contact, following
+// the precedence WhatsApp itself uses.
+func bestContactName(c types.ContactInfo) string {
+	switch {
+	case c.FullName != "":
+		return c.FullName
+	case c.PushName != "":
+		return c.PushName
+	case c.BusinessName != "":
+		return c.BusinessName
+	default:
+		return c.RedactedPhone
+	}
+}
+
+// groupNames returns a JID->subject map for the account's joined groups, cached
+// for groupNameTTL so find_chats doesn't pay a GetJoinedGroups round-trip on
+// every call. On refresh failure it falls back to any (stale) cached map.
+func (m *Manager) groupNames(ctx context.Context, account string, cli *whatsmeow.Client) map[string]string {
+	key := m.acct(account)
+
+	m.groupMu.Lock()
+	if cg, ok := m.groupCache[key]; ok && time.Since(cg.at) < groupNameTTL {
+		m.groupMu.Unlock()
+		return cg.names
+	}
+	m.groupMu.Unlock()
+
+	groups, err := cli.GetJoinedGroups(ctx)
+	if err != nil {
+		m.groupMu.Lock()
+		defer m.groupMu.Unlock()
+		if cg, ok := m.groupCache[key]; ok {
+			return cg.names // stale is better than nothing
+		}
+		return map[string]string{}
+	}
+	names := make(map[string]string, len(groups))
+	for _, g := range groups {
+		names[g.JID.String()] = g.Name
+	}
+	m.groupMu.Lock()
+	m.groupCache[key] = cachedGroupNames{at: time.Now(), names: names}
+	m.groupMu.Unlock()
+	return names
 }
 
 // ---- small helpers -------------------------------------------------------
