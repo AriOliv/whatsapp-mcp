@@ -84,6 +84,46 @@ func (s *Store) Init(ctx context.Context) error {
 			return fmt.Errorf("init schema: %w", err)
 		}
 	}
+	if err := s.ensureMediaColumn(ctx); err != nil {
+		return fmt.Errorf("init schema (media column): %w", err)
+	}
+	return nil
+}
+
+// ensureMediaColumn adds the `media` column (serialized message proto for media
+// messages) to the messages table if it isn't there yet — idempotent on both
+// Postgres and SQLite so it upgrades pre-existing databases in place.
+func (s *Store) ensureMediaColumn(ctx context.Context) error {
+	if s.isPG {
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN IF NOT EXISTS media BYTEA`)
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "media" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !has {
+		_, err = s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN media BLOB`)
+		return err
+	}
 	return nil
 }
 
@@ -96,6 +136,9 @@ type Message struct {
 	TS        int64  `json:"ts_millis"`
 	Body      string `json:"body"`
 	MediaType string `json:"media_type,omitempty"`
+	// MediaProto is the serialized whatsmeow message proto (carries the media
+	// keys) for media messages, used by DownloadMedia. Never serialized to JSON.
+	MediaProto []byte `json:"-"`
 }
 
 // Chat is one stored chat row.
@@ -107,17 +150,37 @@ type Chat struct {
 
 // SaveMessage upserts a message and bumps its chat's last-activity timestamp.
 func (s *Store) SaveMessage(ctx context.Context, account string, m Message) error {
-	up := `INSERT INTO messages (account_jid,id,chat_jid,sender_jid,from_me,ts,body,media_type)
-		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT (account_jid,id) DO UPDATE SET body=excluded.body, media_type=excluded.media_type`
+	up := `INSERT INTO messages (account_jid,id,chat_jid,sender_jid,from_me,ts,body,media_type,media)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (account_jid,id) DO UPDATE SET body=excluded.body, media_type=excluded.media_type,
+			media=COALESCE(excluded.media, messages.media)`
 	if _, err := s.db.ExecContext(ctx, s.reb(up),
-		account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType); err != nil {
+		account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType, m.MediaProto); err != nil {
 		return err
 	}
 	ch := `INSERT INTO chats (account_jid,jid,last_ts) VALUES (?,?,?)
 		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
 	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
 	return err
+}
+
+// GetMedia returns the stored media proto (and media_type) for a message by ID.
+// A nil/empty result means the message has no downloadable media stored.
+func (s *Store) GetMedia(ctx context.Context, account, msgID string) ([]byte, string, error) {
+	var (
+		media []byte
+		mtype sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx, s.reb(
+		`SELECT media, COALESCE(media_type,'') FROM messages WHERE account_jid=? AND id=?`),
+		account, msgID).Scan(&media, &mtype)
+	if err == sql.ErrNoRows {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return media, mtype.String, nil
 }
 
 // ListChats returns chats for an account, most-recent first.

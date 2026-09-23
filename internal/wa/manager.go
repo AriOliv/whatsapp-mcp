@@ -243,14 +243,24 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 		case *events.Message:
 			acct := accountKey(cli.Store.ID)
 			body := messageText(v.Message)
+			mt := mediaType(v.Message)
+			// Persist the message proto for media so it can be downloaded later
+			// (it carries MediaKey/DirectPath/URL — the raw bytes stay on the CDN).
+			var mediaRaw []byte
+			if mt != "" {
+				if b, err := proto.Marshal(v.Message); err == nil {
+					mediaRaw = b
+				}
+			}
 			_ = m.store.SaveMessage(context.Background(), acct, appstore.Message{
-				ID:        v.Info.ID,
-				ChatJID:   v.Info.Chat.String(),
-				SenderJID: v.Info.Sender.String(),
-				FromMe:    v.Info.IsFromMe,
-				TS:        v.Info.Timestamp.UnixMilli(),
-				Body:      body,
-				MediaType: mediaType(v.Message),
+				ID:         v.Info.ID,
+				ChatJID:    v.Info.Chat.String(),
+				SenderJID:  v.Info.Sender.String(),
+				FromMe:     v.Info.IsFromMe,
+				TS:         v.Info.Timestamp.UnixMilli(),
+				Body:       body,
+				MediaType:  mt,
+				MediaProto: mediaRaw,
 			})
 		case *events.LoggedOut:
 			key := accountKey(cli.Store.ID)
@@ -881,6 +891,93 @@ func (m *Manager) ListChats(ctx context.Context, account string, limit int) ([]a
 
 func (m *Manager) ListMessages(ctx context.Context, account, chatJID string, limit int) ([]appstore.Message, error) {
 	return m.store.ListMessages(ctx, m.acct(account), chatJID, limit)
+}
+
+// maxMediaBytes caps a single media download so the base64 result stays within
+// what the transport can carry.
+const maxMediaBytes = 20 << 20 // 20 MiB
+
+// DownloadMedia fetches the media bytes of a stored message (image, audio/voice,
+// video, document, sticker) by message ID, using the message proto we persisted
+// at receive/send time. Returns the bytes, mime type and a suggested filename.
+// Only messages stored after media support was enabled carry the proto.
+func (m *Manager) DownloadMedia(ctx context.Context, account, msgID string) ([]byte, string, string, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return nil, "", "", err
+	}
+	raw, _, err := m.store.GetMedia(ctx, m.acct(account), msgID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if len(raw) == 0 {
+		return nil, "", "", fmt.Errorf("no downloadable media stored for message %q — only media received or sent after media support was enabled can be downloaded", msgID)
+	}
+	var msg waE2E.Message
+	if err := proto.Unmarshal(raw, &msg); err != nil {
+		return nil, "", "", fmt.Errorf("decode stored media: %w", err)
+	}
+	dl, mime, name := mediaPart(&msg, msgID)
+	if dl == nil {
+		return nil, "", "", fmt.Errorf("message %q carries no downloadable media", msgID)
+	}
+	data, err := cli.Download(ctx, dl)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("download: %w", err)
+	}
+	if len(data) > maxMediaBytes {
+		return nil, "", "", fmt.Errorf("media is %d bytes, over the %d limit", len(data), maxMediaBytes)
+	}
+	return data, mime, name, nil
+}
+
+// mediaPart returns the downloadable media part of a message plus its mime type
+// and a suggested filename (msgID + extension derived from the mime type).
+func mediaPart(msg *waE2E.Message, msgID string) (whatsmeow.DownloadableMessage, string, string) {
+	switch {
+	case msg.GetImageMessage() != nil:
+		p := msg.GetImageMessage()
+		return p, p.GetMimetype(), mediaFilename(msgID, p.GetMimetype(), "jpg")
+	case msg.GetVideoMessage() != nil:
+		p := msg.GetVideoMessage()
+		return p, p.GetMimetype(), mediaFilename(msgID, p.GetMimetype(), "mp4")
+	case msg.GetAudioMessage() != nil:
+		p := msg.GetAudioMessage()
+		return p, p.GetMimetype(), mediaFilename(msgID, p.GetMimetype(), "ogg")
+	case msg.GetDocumentMessage() != nil:
+		p := msg.GetDocumentMessage()
+		name := p.GetFileName()
+		if name == "" {
+			name = mediaFilename(msgID, p.GetMimetype(), "bin")
+		}
+		return p, p.GetMimetype(), name
+	case msg.GetStickerMessage() != nil:
+		p := msg.GetStickerMessage()
+		return p, p.GetMimetype(), mediaFilename(msgID, p.GetMimetype(), "webp")
+	default:
+		return nil, "", ""
+	}
+}
+
+// mediaFilename builds "<msgID>.<ext>" from a mime type, falling back to def.
+func mediaFilename(msgID, mime, def string) string {
+	ext := def
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = mime[:i]
+	}
+	if j := strings.IndexByte(mime, '/'); j >= 0 {
+		if sub := strings.TrimSpace(mime[j+1:]); sub != "" {
+			switch sub {
+			case "jpeg":
+				ext = "jpg"
+			case "mpeg":
+				ext = "mp3"
+			default:
+				ext = sub
+			}
+		}
+	}
+	return msgID + "." + ext
 }
 
 func (m *Manager) acct(account string) string {
