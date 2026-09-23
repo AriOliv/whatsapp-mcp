@@ -230,5 +230,26 @@ func (s *Store) ListMessages(ctx context.Context, account, chatJID string, limit
 	return out, rows.Err()
 }
 
+// AllLIDMappings returns whatsmeow's full LID→phone map (user parts only) in a
+// single query, so callers can resolve @lid contacts to phone numbers in memory
+// instead of one round-trip per contact. Reads whatsmeow's shared lid-map table;
+// returns an empty map (not an error) if the table isn't present yet.
+func (s *Store) AllLIDMappings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT lid, pn FROM whatsmeow_lid_map`)
+	if err != nil {
+		return map[string]string{}, nil
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var lid, pn string
+		if err := rows.Scan(&lid, &pn); err != nil {
+			return out, err
+		}
+		out[lid] = pn
+	}
+	return out, rows.Err()
+}
+
 // DB exposes the underlying handle (for sharing with whatsmeow's Postgres store).
 func (s *Store) DB() *sql.DB { return s.db }

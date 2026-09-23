@@ -426,11 +426,19 @@ func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Cont
 	if err != nil {
 		return nil, err
 	}
+	// Resolve @lid→phone in bulk with ONE query (there can be tens of thousands
+	// of contacts; a per-contact GetPNForLID would be tens of thousands of cold
+	// round-trips and time the request out). Best-effort: on error we still
+	// return contacts, just without @lid numbers.
+	lidMap, err := m.store.AllLIDMappings(ctx)
+	if err != nil {
+		lidMap = map[string]string{}
+	}
 	out := make(map[string]Contact, len(raw))
 	for jid, c := range raw {
 		out[jid.String()] = Contact{
 			JID:           jid.String(),
-			Number:        m.contactNumber(ctx, cli, jid),
+			Number:        contactNumber(jid, lidMap),
 			Found:         c.Found,
 			FirstName:     c.FirstName,
 			FullName:      c.FullName,
@@ -443,16 +451,14 @@ func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Cont
 }
 
 // contactNumber returns the full phone number (digits) for a contact JID, or ""
-// when unknown. Phone JIDs carry it directly; @lid JIDs need the LID→phone map
-// (whatsmeow's CachedLIDMap, so lookups are cheap once warm).
-func (m *Manager) contactNumber(ctx context.Context, cli *whatsmeow.Client, jid types.JID) string {
+// when unknown. Phone JIDs carry it in the user part; @lid JIDs are looked up in
+// the pre-loaded LID→phone map (keyed by user part).
+func contactNumber(jid types.JID, lidMap map[string]string) string {
 	switch jid.Server {
 	case "s.whatsapp.net":
 		return jid.User
 	case "lid":
-		if pn, err := cli.Store.LIDs.GetPNForLID(ctx, jid); err == nil && pn.User != "" {
-			return pn.User
-		}
+		return lidMap[jid.User]
 	}
 	return ""
 }
