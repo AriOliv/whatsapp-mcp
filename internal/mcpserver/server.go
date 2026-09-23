@@ -5,6 +5,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -67,6 +68,20 @@ func Build(mgr *wa.Manager) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listMessagesArgs) (*mcp.CallToolResult, any, error) {
 			res, err := mgr.ListMessages(ctx, acct(ctx), in.RemoteJID, in.Limit)
 			return done(res, err)
+		})
+
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_download_media", Description: "Download the media of a stored message (image, audio/voice note, video, document, or sticker) by its message id (from find_messages). Returns base64 data plus mimetype and a suggested filename. Only messages received or sent after media support was enabled carry downloadable media."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in downloadMediaArgs) (*mcp.CallToolResult, any, error) {
+			data, mime, name, err := mgr.DownloadMedia(ctx, acct(ctx), in.ID)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(map[string]any{
+				"mimetype":    mime,
+				"filename":    name,
+				"bytes":       len(data),
+				"data_base64": base64.StdEncoding.EncodeToString(data),
+			}, nil)
 		})
 
 	// --- groups ---
@@ -286,6 +301,11 @@ type listChatsArgs struct {
 type listMessagesArgs struct {
 	RemoteJID string `json:"remoteJid"`
 	Limit     int    `json:"limit,omitempty"`
+}
+
+type downloadMediaArgs struct {
+	ID        string `json:"id" jsonschema:"Message id to download media from (from find_messages)"`
+	RemoteJID string `json:"remoteJid,omitempty" jsonschema:"Optional chat JID for context"`
 }
 
 type groupJidArgs struct {
