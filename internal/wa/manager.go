@@ -401,13 +401,60 @@ func (m *Manager) React(ctx context.Context, account, chat, sender, msgID, emoji
 	return resp.ID, nil
 }
 
-// Contacts returns the account's stored contacts.
-func (m *Manager) Contacts(ctx context.Context, account string) (map[types.JID]types.ContactInfo, error) {
+// Contact is a stored contact enriched with the resolved phone number.
+type Contact struct {
+	JID           string `json:"JID"`
+	Number        string `json:"Number"` // full phone digits when known; empty for privacy-only (@lid) contacts with no mapping
+	Found         bool   `json:"Found"`
+	FirstName     string `json:"FirstName"`
+	FullName      string `json:"FullName"`
+	PushName      string `json:"PushName"`
+	BusinessName  string `json:"BusinessName"`
+	RedactedPhone string `json:"RedactedPhone"`
+}
+
+// Contacts returns the account's stored contacts, each enriched with the sender
+// phone number: taken straight from the JID for phone-based (@s.whatsapp.net)
+// contacts, or resolved from the LID→phone map for @lid contacts when a mapping
+// is known (empty otherwise — the number is private in that case).
+func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Contact, error) {
 	cli, err := m.clientFor(account)
 	if err != nil {
 		return nil, err
 	}
-	return cli.Store.Contacts.GetAllContacts(ctx)
+	raw, err := cli.Store.Contacts.GetAllContacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]Contact, len(raw))
+	for jid, c := range raw {
+		out[jid.String()] = Contact{
+			JID:           jid.String(),
+			Number:        m.contactNumber(ctx, cli, jid),
+			Found:         c.Found,
+			FirstName:     c.FirstName,
+			FullName:      c.FullName,
+			PushName:      c.PushName,
+			BusinessName:  c.BusinessName,
+			RedactedPhone: c.RedactedPhone,
+		}
+	}
+	return out, nil
+}
+
+// contactNumber returns the full phone number (digits) for a contact JID, or ""
+// when unknown. Phone JIDs carry it directly; @lid JIDs need the LID→phone map
+// (whatsmeow's CachedLIDMap, so lookups are cheap once warm).
+func (m *Manager) contactNumber(ctx context.Context, cli *whatsmeow.Client, jid types.JID) string {
+	switch jid.Server {
+	case "s.whatsapp.net":
+		return jid.User
+	case "lid":
+		if pn, err := cli.Store.LIDs.GetPNForLID(ctx, jid); err == nil && pn.User != "" {
+			return pn.User
+		}
+	}
+	return ""
 }
 
 // CheckNumbers reports which numbers are on WhatsApp.
