@@ -6,14 +6,19 @@ import (
 	"time"
 )
 
-// namesRefreshTimeout is deliberately generous. A refresh is not just a WhatsApp
-// round-trip: whatsmeow also writes every contact it learned along the way
-// (PutManyRedactedPhones — hundreds of rows for an account in many groups).
-// Cutting that short leaves the write half-done, fails it with "transaction:
-// begin: context deadline exceeded", and poisons the pooled connection it was
-// using ("driver: bad connection"). So a refresh gets room to finish even after
-// the caller has stopped waiting for it.
-const namesRefreshTimeout = 2 * time.Minute
+// namesRefreshTimeout is deliberately very generous, because the only thing
+// worse than a slow refresh is one that never finishes.
+//
+// A refresh is not just a WhatsApp round-trip: whatsmeow also writes every LID
+// mapping and contact it learned on the way (thousands of rows for an account in
+// hundreds of groups). Measured against a real account that takes minutes. Cut
+// it short and the write fails with "transaction: begin: context deadline
+// exceeded", the connection it was using is discarded as bad, *and* nothing is
+// learned — so the next listing starts the whole thing over. Letting it run to
+// completion once is what makes every later listing free.
+//
+// Nobody waits on this: it runs in the background on its own context.
+const namesRefreshTimeout = 10 * time.Minute
 
 // fetchNames retrieves the display names for one account.
 type fetchNames func(context.Context) (map[string]string, error)
