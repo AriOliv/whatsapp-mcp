@@ -1070,9 +1070,16 @@ func (m *Manager) acct(account string) string {
 	return m.def
 }
 
-// groupNameTTL bounds how often ListChats refreshes joined-group subjects and
-// subscribed-newsletter names: each is a network round-trip that returns all.
-const groupNameTTL = 5 * time.Minute
+// groupNameTTL bounds how long resolved group and newsletter names are reused.
+//
+// It is long on purpose. Refreshing means asking WhatsApp for every joined
+// group, which makes whatsmeow write thousands of rows and — because it handles
+// nodes serially — holds up message reception while it does. Names barely ever
+// change, and a stale one costs nothing, so this is worth paying roughly once a
+// day rather than every few minutes. Resolved names are written to the chats
+// table as well, so after the first pass a listing usually needs no lookup at
+// all and this never fires.
+const groupNameTTL = 12 * time.Hour
 
 // fillChatNames resolves a display name for every chat that has none. It is
 // best-effort: any lookup failure leaves that chat's name empty rather than
