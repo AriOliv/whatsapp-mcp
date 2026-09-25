@@ -23,3 +23,7 @@ yarn-debug.log*
 yarn-error.log*
 *.log
 .env.docker
+
+# MCP App build: node deps only — the built bundle (internal/mcpserver/ui/app.html)
+# IS committed, so `go build` works without a node toolchain.
+app/node_modules/
