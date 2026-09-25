@@ -1108,6 +1108,8 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	// patience. These are reads, so cutting one short damages nothing.
 	ctx, cancel := context.WithTimeout(ctx, chatNameLookupTimeout)
 	defer cancel()
+	learned := map[string]string{}
+	defer func() { m.rememberChatNames(account, learned) }()
 	for i := range chats {
 		c := &chats[i]
 		if c.Name != "" {
@@ -1132,7 +1134,27 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 				c.Name = bestContactName(info)
 			}
 		}
+		if c.Name != "" {
+			learned[c.JID] = c.Name
+		}
 	}
+}
+
+// rememberChatNames stores the names a listing just resolved, so the next one
+// reads them from the database instead of asking WhatsApp again. It runs in the
+// background on its own context: nobody is waiting on a cache warm-up, and the
+// caller's context is about to be cancelled.
+func (m *Manager) rememberChatNames(account string, names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := m.store.SaveChatNames(ctx, m.acct(account), names); err != nil {
+			m.log.Warnf("storing chat names: %v", err)
+		}
+	}()
 }
 
 // bestContactName picks the most human name from a whatsmeow contact, following
