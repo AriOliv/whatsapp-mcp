@@ -49,10 +49,10 @@ type Manager struct {
 	ingestDropLog atomic.Int64
 	ingestFailLog atomic.Int64
 
-	groupMu    sync.Mutex
-	groupCache map[string]cachedNames // account JID -> joined-group subjects (ListChats)
-	nlMu       sync.Mutex
-	nlCache    map[string]cachedNames // account JID -> subscribed-newsletter names (ListChats)
+	// Display-name caches. Both refresh under a single flight; see names_cache.go
+	// for why a burst of concurrent refreshes is dangerous.
+	groupNameCache      *namesCache // account -> joined-group subjects
+	newsletterNameCache *namesCache // account -> subscribed-newsletter names
 }
 
 // New opens the whatsmeow sqlstore, sharing the app's *sql.DB, and sets the
@@ -78,13 +78,13 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		return nil, fmt.Errorf("whatsmeow store upgrade: %w", err)
 	}
 	m := &Manager{
-		container:  container,
-		store:      st,
-		log:        logger,
-		clients:    map[string]*whatsmeow.Client{},
-		flows:      map[string]*PairFlow{},
-		groupCache: map[string]cachedNames{},
-		nlCache:    map[string]cachedNames{},
+		container:           container,
+		store:               st,
+		log:                 logger,
+		clients:             map[string]*whatsmeow.Client{},
+		flows:               map[string]*PairFlow{},
+		groupNameCache:      newNamesCache(groupNameTTL),
+		newsletterNameCache: newNamesCache(groupNameTTL),
 	}
 	m.startIngest(ctx)
 	return m, nil
@@ -1061,11 +1061,6 @@ func (m *Manager) acct(account string) string {
 // subscribed-newsletter names: each is a network round-trip that returns all.
 const groupNameTTL = 5 * time.Minute
 
-type cachedNames struct {
-	at    time.Time
-	names map[string]string // JID string -> display name
-}
-
 // fillChatNames resolves a display name for every chat that has none. It is
 // best-effort: any lookup failure leaves that chat's name empty rather than
 // failing the whole listing. Groups use joined-group subjects (cached);
@@ -1098,14 +1093,9 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	if err != nil {
 		return // not connected: leave names empty rather than error the listing
 	}
-	// Resolving names costs WhatsApp round-trips (group subjects, newsletter
-	// names) and one contact read per chat, over a socket that may also be
-	// carrying history sync. Without a deadline a listing can outlive its
-	// caller's own timeout and fail outright, so bound the lookups and fall back
-	// to whatever names we already have — the display name derived from the JID
-	// is a far better outcome than no listing at all.
-	ctx, cancel := context.WithTimeout(ctx, chatNameLookupTimeout)
-	defer cancel()
+	// Group and newsletter names come from a cache that refreshes in the
+	// background: the lookup waits briefly and otherwise returns what it has,
+	// rather than holding the listing open for a WhatsApp round-trip.
 	var groups, newsletters map[string]string
 	if needGroup {
 		groups = m.groupNames(ctx, account, cli)
@@ -1113,6 +1103,11 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	if needNewsletter {
 		newsletters = m.newsletterNames(ctx, account, cli)
 	}
+	// The contact reads below are local, but there is one per chat; bound the
+	// loop so a contended pool cannot stretch a listing past its caller's
+	// patience. These are reads, so cutting one short damages nothing.
+	ctx, cancel := context.WithTimeout(ctx, chatNameLookupTimeout)
+	defer cancel()
 	for i := range chats {
 		c := &chats[i]
 		if c.Name != "" {
@@ -1159,32 +1154,17 @@ func bestContactName(c types.ContactInfo) string {
 // for groupNameTTL so find_chats doesn't pay a GetJoinedGroups round-trip on
 // every call. On refresh failure it falls back to any (stale) cached map.
 func (m *Manager) groupNames(ctx context.Context, account string, cli *whatsmeow.Client) map[string]string {
-	key := m.acct(account)
-
-	m.groupMu.Lock()
-	if cg, ok := m.groupCache[key]; ok && time.Since(cg.at) < groupNameTTL {
-		m.groupMu.Unlock()
-		return cg.names
-	}
-	m.groupMu.Unlock()
-
-	groups, err := cli.GetJoinedGroups(ctx)
-	if err != nil {
-		m.groupMu.Lock()
-		defer m.groupMu.Unlock()
-		if cg, ok := m.groupCache[key]; ok {
-			return cg.names // stale is better than nothing
+	return m.groupNameCache.lookup(ctx, m.acct(account), chatNameLookupTimeout, func(ctx context.Context) (map[string]string, error) {
+		groups, err := cli.GetJoinedGroups(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return map[string]string{}
-	}
-	names := make(map[string]string, len(groups))
-	for _, g := range groups {
-		names[g.JID.String()] = g.Name
-	}
-	m.groupMu.Lock()
-	m.groupCache[key] = cachedNames{at: time.Now(), names: names}
-	m.groupMu.Unlock()
-	return names
+		names := make(map[string]string, len(groups))
+		for _, g := range groups {
+			names[g.JID.String()] = g.Name
+		}
+		return names, nil
+	})
 }
 
 // newsletterNames returns a JID->name map for the account's subscribed
@@ -1192,34 +1172,19 @@ func (m *Manager) groupNames(ctx context.Context, account string, cli *whatsmeow
 // GetSubscribedNewsletters round-trip on every call. Falls back to any stale
 // cache on failure.
 func (m *Manager) newsletterNames(ctx context.Context, account string, cli *whatsmeow.Client) map[string]string {
-	key := m.acct(account)
-
-	m.nlMu.Lock()
-	if cn, ok := m.nlCache[key]; ok && time.Since(cn.at) < groupNameTTL {
-		m.nlMu.Unlock()
-		return cn.names
-	}
-	m.nlMu.Unlock()
-
-	list, err := cli.GetSubscribedNewsletters(ctx)
-	if err != nil {
-		m.nlMu.Lock()
-		defer m.nlMu.Unlock()
-		if cn, ok := m.nlCache[key]; ok {
-			return cn.names // stale is better than nothing
+	return m.newsletterNameCache.lookup(ctx, m.acct(account), chatNameLookupTimeout, func(ctx context.Context) (map[string]string, error) {
+		list, err := cli.GetSubscribedNewsletters(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return map[string]string{}
-	}
-	names := make(map[string]string, len(list))
-	for _, nl := range list {
-		if nl != nil {
-			names[nl.ID.String()] = nl.ThreadMeta.Name.Text
+		names := make(map[string]string, len(list))
+		for _, nl := range list {
+			if nl != nil {
+				names[nl.ID.String()] = nl.ThreadMeta.Name.Text
+			}
 		}
-	}
-	m.nlMu.Lock()
-	m.nlCache[key] = cachedNames{at: time.Now(), names: names}
-	m.nlMu.Unlock()
-	return names
+		return names, nil
+	})
 }
 
 // ---- small helpers -------------------------------------------------------

@@ -25,6 +25,10 @@ import (
 func Build(mgr *wa.Manager) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "whatsapp-mcp", Version: "2.0.0-whatsmeow"}, nil)
 
+	// Without this, a failing tool is invisible server-side: the error travels
+	// back inside the result and never reaches the log.
+	s.AddReceivingMiddleware(logToolFailures)
+
 	// The interactive UI every card renders from.
 	registerApp(s)
 
