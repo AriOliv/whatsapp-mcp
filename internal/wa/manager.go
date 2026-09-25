@@ -83,11 +83,24 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		log:                 logger,
 		clients:             map[string]*whatsmeow.Client{},
 		flows:               map[string]*PairFlow{},
-		groupNameCache:      newNamesCache(groupNameTTL),
-		newsletterNameCache: newNamesCache(groupNameTTL),
+		groupNameCache:      newNamesCache(groupNameTTL, logSlowRefresh(logger, "joined groups")),
+		newsletterNameCache: newNamesCache(groupNameTTL, logSlowRefresh(logger, "newsletters")),
 	}
 	m.startIngest(ctx)
 	return m, nil
+}
+
+// logSlowRefresh reports a name refresh that failed or dragged. These run in the
+// background, so without a line here a slow one is invisible — and a slow one is
+// exactly what makes a listing show raw identifiers instead of names.
+func logSlowRefresh(log waLog.Logger, what string) func(string, time.Duration, error) {
+	return func(account string, took time.Duration, err error) {
+		if err != nil {
+			log.Warnf("refreshing %s for %s failed after %s: %v", what, account, took, err)
+			return
+		}
+		log.Warnf("refreshing %s for %s took %s", what, account, took)
+	}
 }
 
 func accountKey(jid *types.JID) string {

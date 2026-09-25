@@ -28,9 +28,15 @@ type fetchNames func(context.Context) (map[string]string, error)
 // tool calls costing exactly one write.
 type namesCache struct {
 	ttl     time.Duration
+	slow    func(key string, took time.Duration, err error) // reports a refresh worth noticing
 	mu      sync.Mutex
 	entries map[string]*namesEntry
 }
+
+// slowRefresh is how long a refresh may take before it is worth a log line. The
+// fetch is a WhatsApp round-trip plus whatsmeow's own bookkeeping writes, and
+// when it drags it is the first thing worth knowing about.
+const slowRefresh = 3 * time.Second
 
 type namesEntry struct {
 	at    time.Time
@@ -38,8 +44,8 @@ type namesEntry struct {
 	done  chan struct{} // non-nil while a refresh is in flight
 }
 
-func newNamesCache(ttl time.Duration) *namesCache {
-	return &namesCache{ttl: ttl, entries: map[string]*namesEntry{}}
+func newNamesCache(ttl time.Duration, slow func(key string, took time.Duration, err error)) *namesCache {
+	return &namesCache{ttl: ttl, slow: slow, entries: map[string]*namesEntry{}}
 }
 
 // lookup returns the names for an account, refreshing them when stale. It waits
@@ -95,7 +101,11 @@ func (c *namesCache) lookup(ctx context.Context, key string, wait time.Duration,
 func (c *namesCache) refresh(key string, done chan struct{}, fetch fetchNames) {
 	ctx, cancel := context.WithTimeout(context.Background(), namesRefreshTimeout)
 	defer cancel()
+	start := time.Now()
 	names, err := fetch(ctx)
+	if took := time.Since(start); c.slow != nil && (err != nil || took > slowRefresh) {
+		c.slow(key, took, err)
+	}
 
 	c.mu.Lock()
 	e := c.entries[key]

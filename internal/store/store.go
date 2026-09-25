@@ -21,47 +21,69 @@ type Store struct {
 	isPG bool
 }
 
-// Pool limits for Postgres, sized for one replica serving a handful of linked
-// accounts: enough concurrency for history sync plus tool calls, far enough
-// below a managed instance's connection limit to leave headroom for everything
-// else pointed at the same database.
+// Pool limits for Postgres. The database allows 400 connections and is shared
+// with other services, so these are sized for headroom rather than to the cap:
+// eight linked accounts replaying history, plus this server's own queries, stay
+// comfortably inside them.
 const (
-	pgMaxOpenConns    = 20
-	pgMaxIdleConns    = 10
-	pgConnMaxLifetime = 30 * time.Minute
-	pgConnMaxIdleTime = 5 * time.Minute
+	// waMaxOpenConns is the larger share because whatsmeow needs a connection
+	// inside the code path that receives messages.
+	waMaxOpenConns  = 40
+	waMaxIdleConns  = 10
+	appMaxOpenConns = 15
+	appMaxIdleConns = 5
+
+	connMaxLifetime = 30 * time.Minute
+	connMaxIdleTime = 5 * time.Minute
 )
 
-// Open opens the application store DB. Postgres when dbURL is a postgres URL,
-// otherwise a modernc SQLite DSN. Returns the *sql.DB too so the caller can share
-// it with the whatsmeow sqlstore when using Postgres.
+// Open opens the application store and the handle whatsmeow will use.
+//
+// On Postgres those are two separate pools over the same database, deliberately.
+// whatsmeow needs a connection inside its serial node handler — the code path
+// that receives messages — so a single shared pool lets this server's own
+// queries starve message reception: exhaust it with tool calls and whatsmeow
+// stops answering the socket until one frees up. Separate pools mean neither
+// side can take the other down, and each is sized for its own work.
+//
+// SQLite keeps one handle: there is no connection limit to divide, and a second
+// pool would only add file-lock contention.
 func Open(dbURL string, isPG bool) (*Store, *sql.DB, error) {
-	driver, dsn := "sqlite", dbURL
+	driver := "sqlite"
 	if isPG {
-		driver, dsn = "postgres", dbURL
+		driver = "postgres"
 	}
+	appDB, err := openPool(driver, dbURL, isPG, appMaxOpenConns, appMaxIdleConns)
+	if err != nil {
+		return nil, nil, err
+	}
+	st := &Store{db: appDB, isPG: isPG}
+	if !isPG {
+		return st, appDB, nil
+	}
+	waDB, err := openPool(driver, dbURL, isPG, waMaxOpenConns, waMaxIdleConns)
+	if err != nil {
+		return nil, nil, err
+	}
+	return st, waDB, nil
+}
+
+// openPool opens one connection pool and verifies it can reach the database.
+func openPool(driver, dsn string, bound bool, maxOpen, maxIdle int) (*sql.DB, error) {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s: %w", driver, err)
+		return nil, fmt.Errorf("open %s: %w", driver, err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, nil, fmt.Errorf("ping %s: %w", driver, err)
+		return nil, fmt.Errorf("ping %s: %w", driver, err)
 	}
-	if isPG {
-		// Bound the Postgres pool. This *sql.DB is shared with whatsmeow's
-		// sqlstore (wa.New passes it to sqlstore.NewWithDB), so every session,
-		// identity and app-state write competes for it with this server's own
-		// queries. Go's default is unlimited, which lets a reconnect storm open
-		// connections until the server refuses them — and a connection error
-		// raised inside whatsmeow's synchronous event handler stalls message
-		// reception. Left unbounded for SQLite, where there is no connection
-		// limit to exhaust and a small pool risks deadlocking nested queries.
-		db.SetMaxOpenConns(pgMaxOpenConns)
-		db.SetMaxIdleConns(pgMaxIdleConns)
-		db.SetConnMaxLifetime(pgConnMaxLifetime)
-		db.SetConnMaxIdleTime(pgConnMaxIdleTime)
+	if bound {
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
+		db.SetConnMaxLifetime(connMaxLifetime)
+		db.SetConnMaxIdleTime(connMaxIdleTime)
 	}
-	return &Store{db: db, isPG: isPG}, db, nil
+	return db, nil
 }
 
 // SaveChatNames records display names learned for chats that already exist, so
