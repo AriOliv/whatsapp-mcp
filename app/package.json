@@ -1,0 +1,26 @@
+{
+  "name": "@aol/whatsapp-mcp-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP App (interactive UI) for whatsapp-mcp — cards rendered inside Claude.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "preact": "^10.29.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.0",
+    "vite-plugin-singlefile": "^2.3.0"
+  },
+  "engines": { "node": ">=20.0.0" }
+}

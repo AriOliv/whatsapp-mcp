@@ -1,0 +1,565 @@
+/*
+ * Design system for the WhatsApp MCP App.
+ *
+ * Every structural value (color, type, radius, border, shadow) aliases a host
+ * style variable, with a light-mode fallback so the app stays readable outside
+ * Claude. Dark mode needs no rules of its own: the host swaps the token values
+ * and `applyDocumentTheme` sets `color-scheme`, so `light-dark()` resolves.
+ *
+ * The only brand value is `--accent` (WhatsApp green), used exclusively for
+ * identity accents and the primary action — never for structure.
+ */
+
+:root {
+  /* Surfaces */
+  --bg: var(--color-background-primary, #ffffff);
+  --surface: var(--color-background-secondary, #f5f4ed);
+  --surface-2: var(--color-background-tertiary, #faf9f5);
+  --inverse: var(--color-background-inverse, #141413);
+
+  /* Text */
+  --tx: var(--color-text-primary, #141413);
+  --tx-2: var(--color-text-secondary, #3d3d3a);
+  --tx-3: var(--color-text-tertiary, #73726c);
+  --tx-inv: var(--color-text-inverse, #ffffff);
+
+  /* Lines */
+  --line: var(--color-border-primary, rgba(31, 30, 29, 0.4));
+  --line-2: var(--color-border-secondary, rgba(31, 30, 29, 0.3));
+  --line-3: var(--color-border-tertiary, rgba(31, 30, 29, 0.15));
+  --bw: var(--border-width-regular, 0.5px);
+
+  /* Semantic */
+  --ok-bg: var(--color-background-success, #e9f1dc);
+  --ok-tx: var(--color-text-success, #265b19);
+  --warn-bg: var(--color-background-warning, #f6eedf);
+  --warn-tx: var(--color-text-warning, #5a4815);
+  --danger-bg: var(--color-background-danger, #f7ecec);
+  --danger-tx: var(--color-text-danger, #7f2c28);
+  --info-bg: var(--color-background-info, #d6e4f6);
+  --info-tx: var(--color-text-info, #3266ad);
+
+  /* Radius */
+  --r-xs: var(--border-radius-xs, 4px);
+  --r-sm: var(--border-radius-sm, 6px);
+  --r-md: var(--border-radius-md, 8px);
+  --r-lg: var(--border-radius-lg, 10px);
+  --r-xl: var(--border-radius-xl, 12px);
+  --r-full: var(--border-radius-full, 9999px);
+
+  /* Shadow */
+  --sh-sm: var(--shadow-sm, 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1));
+  --sh-md: var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1));
+
+  /* Type: three sizes, two weights — per the guidelines */
+  --sans: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  --t-cap: var(--font-text-xs-size, 12px);
+  --t-body: var(--font-text-sm-size, 14px);
+  --t-lead: var(--font-text-md-size, 16px);
+  --h-sm: var(--font-heading-sm-size, 14px);
+  --h-md: var(--font-heading-md-size, 16px);
+  --h-lg: var(--font-heading-lg-size, 20px);
+  --lh-body: var(--font-text-sm-line-height, 1.4);
+  --lh-tight: var(--font-heading-lg-line-height, 1.25);
+  --w-normal: var(--font-weight-normal, 400);
+  --w-medium: var(--font-weight-medium, 500);
+  --w-semi: var(--font-weight-semibold, 600);
+
+  /* Brand accent — identity + primary action only */
+  --accent: #1fa855;
+  --accent-ink: #ffffff;
+
+  /* Host safe areas (filled at runtime from hostContext) */
+  --safe-top: 0px;
+  --safe-right: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+
+  --gap: 12px;
+}
+
+/* An opaque body would hide Claude's chat surface behind the iframe. */
+html,
+body {
+  margin: 0;
+  background: transparent;
+}
+
+body {
+  color: var(--tx);
+  font-family: var(--sans);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------- layout -- */
+
+.app {
+  padding: calc(4px + var(--safe-top)) calc(4px + var(--safe-right)) calc(4px + var(--safe-bottom))
+    calc(4px + var(--safe-left));
+}
+
+/* Inline: the card is the surface. It fills the chat column width — a fixed
+   max-width leaves it floating as a small island in a wide iframe. */
+.card {
+  background: var(--surface);
+  border: var(--bw) solid var(--line-3);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+  width: 100%;
+}
+
+.card-pad {
+  padding: 14px 16px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------ typography -- */
+
+.h {
+  font-size: var(--h-md);
+  line-height: var(--lh-body);
+  font-weight: var(--w-semi);
+  color: var(--tx);
+  margin: 0;
+}
+
+.h-lg {
+  font-size: var(--h-lg);
+  line-height: var(--lh-tight);
+  font-weight: var(--w-semi);
+  color: var(--tx);
+  margin: 0;
+}
+
+.body {
+  font-size: var(--t-body);
+  color: var(--tx-2);
+}
+
+.cap {
+  font-size: var(--t-cap);
+  color: var(--tx-3);
+}
+
+.strong {
+  font-weight: var(--w-semi);
+  color: var(--tx);
+}
+
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------- controls -- */
+
+button {
+  font-family: inherit;
+  font-size: var(--t-body);
+  font-weight: var(--w-medium);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  /* 44px minimum tap target (Apple HIG / Material) */
+  min-height: 44px;
+  padding: 0 14px;
+  border: var(--bw) solid transparent;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--color-ring-primary, var(--accent));
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--tx);
+  border-color: var(--line-2);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+/* Icon-only affordance; still 44px of hit area via padding. */
+.btn-icon {
+  background: transparent;
+  border-color: transparent;
+  color: var(--tx-2);
+  min-width: 44px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--tx);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions > button {
+  flex: 1;
+}
+
+/* Segmented control — visible options instead of a dropdown, which would be
+   clipped by the host container. */
+.segmented {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: var(--bw) solid var(--line-3);
+  border-radius: var(--r-full);
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--tx-2);
+  font-size: var(--t-cap);
+  border: none;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--bg);
+  color: var(--tx);
+  font-weight: var(--w-semi);
+  box-shadow: var(--sh-sm);
+}
+
+/* ----------------------------------------------------------------- atoms -- */
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  border: var(--bw) solid var(--line-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-body);
+  font-weight: var(--w-semi);
+  color: var(--tx-2);
+  flex: none;
+  overflow: hidden;
+  object-fit: cover;
+}
+
+.avatar-sm {
+  width: 28px;
+  height: 28px;
+  font-size: var(--t-cap);
+}
+
+.avatar-lg {
+  width: 56px;
+  height: 56px;
+  font-size: var(--h-md);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-cap);
+  font-weight: var(--w-medium);
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: var(--bw) solid transparent;
+  white-space: nowrap;
+}
+
+.badge-neutral {
+  background: var(--surface-2);
+  color: var(--tx-2);
+  border-color: var(--line-3);
+}
+
+.badge-ok {
+  background: var(--ok-bg);
+  color: var(--ok-tx);
+}
+
+.badge-warn {
+  background: var(--warn-bg);
+  color: var(--warn-tx);
+}
+
+.badge-danger {
+  background: var(--danger-bg);
+  color: var(--danger-tx);
+}
+
+.badge-info {
+  background: var(--info-bg);
+  color: var(--info-tx);
+}
+
+.badge-accent {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  flex: none;
+}
+
+.divider {
+  height: var(--bw);
+  background: var(--line-3);
+  border: 0;
+  margin: 0;
+}
+
+.chip {
+  font-size: var(--t-cap);
+  padding: 4px 10px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  border: var(--bw) solid var(--line-3);
+  color: var(--tx-2);
+}
+
+/* Rows in a list: the whole row is the tap target. */
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  font-weight: var(--w-normal);
+  color: var(--tx);
+}
+
+.item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.item + .item {
+  border-top: var(--bw) solid var(--line-3);
+}
+
+/* -------------------------------------------------------------- feedback -- */
+
+/* Skeletons match the final layout so the swap is seamless (no spinners). */
+.skel {
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  height: 12px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel {
+    animation: none;
+  }
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--tx-3);
+}
+
+.error {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: var(--danger-bg);
+  color: var(--danger-tx);
+  border-radius: var(--r-md);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------- carousel -- */
+/* Horizontal gestures work inside an inline app (vertical pans belong to the
+   conversation), so a carousel is the right inline pattern for comparable
+   items. Safe-area insets become scroll-padding so cards rest clear of the
+   device edges while still scrolling under them. */
+.carousel {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: calc(16px + var(--safe-left)) calc(16px + var(--safe-right));
+  padding: 4px 16px 14px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.carousel::-webkit-scrollbar {
+  height: 6px;
+}
+
+.carousel::-webkit-scrollbar-thumb {
+  background: var(--line-3);
+  border-radius: var(--r-full);
+}
+
+/* ~86% keeps the next card peeking, signalling scrollability. */
+.slide {
+  scroll-snap-align: start;
+  flex: 0 0 min(86%, 260px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border: var(--bw) solid var(--line-3);
+  border-radius: var(--r-lg);
+  min-height: 0;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  align-items: baseline;
+}
+
+.kv dt {
+  font-size: var(--t-cap);
+  color: var(--tx-3);
+  margin: 0;
+}
+
+.kv dd {
+  margin: 0;
+  font-size: var(--t-body);
+  color: var(--tx);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stat-row {
+  display: flex;
+  gap: 10px;
+}
+
+.stat {
+  flex: 1;
+  background: var(--surface-2);
+  border: var(--bw) solid var(--line-3);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.stat-v {
+  font-size: var(--h-lg);
+  line-height: var(--lh-tight);
+  font-weight: var(--w-semi);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--tx);
+}
+
+.stat-k {
+  font-size: var(--t-cap);
+  color: var(--tx-3);
+}

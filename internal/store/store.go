@@ -230,6 +230,46 @@ func (s *Store) ListMessages(ctx context.Context, account, chatJID string, limit
 	return out, rows.Err()
 }
 
+// LatestPerChat returns the most recent message of each of the given chats in a
+// single query, so a chat list can render preview lines without one round-trip
+// per row.
+func (s *Store) LatestPerChat(ctx context.Context, account string, chatJIDs []string) (map[string]Message, error) {
+	out := make(map[string]Message, len(chatJIDs))
+	if len(chatJIDs) == 0 {
+		return out, nil
+	}
+	// Build an IN list with placeholders; reb() renumbers them for Postgres.
+	ph := make([]string, len(chatJIDs))
+	args := make([]any, 0, len(chatJIDs)+1)
+	args = append(args, account)
+	for i, j := range chatJIDs {
+		ph[i] = "?"
+		args = append(args, j)
+	}
+	q := `SELECT m.id, m.chat_jid, COALESCE(m.sender_jid,''), m.from_me, COALESCE(m.ts,0),
+	             COALESCE(m.body,''), COALESCE(m.media_type,'')
+	      FROM messages m
+	      JOIN (SELECT chat_jid, MAX(ts) AS ts FROM messages
+	            WHERE account_jid=? AND chat_jid IN (` + strings.Join(ph, ",") + `)
+	            GROUP BY chat_jid) latest
+	        ON latest.chat_jid = m.chat_jid AND latest.ts = m.ts
+	      WHERE m.account_jid = ?`
+	args = append(args, account)
+	rows, err := s.db.QueryContext(ctx, s.reb(q), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.SenderJID, &m.FromMe, &m.TS, &m.Body, &m.MediaType); err != nil {
+			return nil, err
+		}
+		out[m.ChatJID] = m
+	}
+	return out, rows.Err()
+}
+
 // AllLIDMappings returns whatsmeow's full LID→phone map (user parts only) in a
 // single query, so callers can resolve @lid contacts to phone numbers in memory
 // instead of one round-trip per contact. Reads whatsmeow's shared lid-map table;
