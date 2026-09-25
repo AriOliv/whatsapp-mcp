@@ -6,11 +6,16 @@
  * Claude. Dark mode needs no rules of its own: the host swaps the token values
  * and `applyDocumentTheme` sets `color-scheme`, so `light-dark()` resolves.
  *
+ * The aliases are declared on `:root, [data-tokens]` rather than `:root` alone:
+ * a `:root` declaration would always win over an ancestor that re-declares the
+ * host variables further down the tree (the preview harness does exactly that).
+ *
  * The only brand value is `--accent` (WhatsApp green), used exclusively for
  * identity accents and the primary action — never for structure.
  */
 
-:root {
+:root,
+[data-tokens] {
   /* Surfaces */
   --bg: var(--color-background-primary, #ffffff);
   --surface: var(--color-background-secondary, #f5f4ed);
@@ -504,7 +509,9 @@ button:focus-visible {
 /* ~86% keeps the next card peeking, signalling scrollability. */
 .slide {
   scroll-snap-align: start;
-  flex: 0 0 min(86%, 260px);
+  /* 86% keeps the next card peeking on a phone; the 220px floor keeps several
+     visible on a wide card instead of two oversized ones. */
+  flex: 0 0 clamp(200px, 86%, 220px);
   display: flex;
   flex-direction: column;
   gap: 8px;
