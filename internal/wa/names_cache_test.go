@@ -46,6 +46,29 @@ func TestConcurrentLookupsShareOneFetch(t *testing.T) {
 	}
 }
 
+// Once any answer is cached, a caller must not wait on a refresh: a listing with
+// names a few minutes old beats one that stalls for a round-trip nobody needs.
+func TestCachedNamesAreReturnedWithoutWaitingForTheRefresh(t *testing.T) {
+	c := newNamesCache(time.Nanosecond) // always stale, so every call refreshes
+	first := func(context.Context) (map[string]string, error) {
+		return map[string]string{"a@g.us": "Group A"}, nil
+	}
+	c.lookup(context.Background(), "acct", time.Second, first)
+
+	slow := func(ctx context.Context) (map[string]string, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	start := time.Now()
+	names := c.lookup(context.Background(), "acct", 10*time.Second, slow)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("waited %s on a refresh despite having cached names", took)
+	}
+	if names["a@g.us"] != "Group A" {
+		t.Fatalf("got %v, want the cached names", names)
+	}
+}
+
 // A caller that runs out of patience must not cancel the refresh: whatsmeow is
 // still writing the contacts it learned, and killing that mid-transaction
 // poisons the connection it was using.

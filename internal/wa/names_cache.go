@@ -43,9 +43,9 @@ func newNamesCache(ttl time.Duration) *namesCache {
 }
 
 // lookup returns the names for an account, refreshing them when stale. It waits
-// at most wait for a refresh to land; past that it returns what it already has,
-// which may be stale or nil. The refresh keeps running either way, so the next
-// caller finds it ready.
+// at most wait for a refresh to land, and only when it has nothing at all to
+// show; once any answer is cached, callers get it immediately while the refresh
+// continues in the background.
 func (c *namesCache) lookup(ctx context.Context, key string, wait time.Duration, fetch fetchNames) map[string]string {
 	c.mu.Lock()
 	e := c.entries[key]
@@ -66,6 +66,14 @@ func (c *namesCache) lookup(ctx context.Context, key string, wait time.Duration,
 	}
 	stale := e.names
 	c.mu.Unlock()
+
+	// Never make a caller wait when we already have an answer. A refresh can
+	// take minutes — GetJoinedGroups is a round-trip over a socket that may be
+	// busy with history sync — and names that are a few minutes old are worth
+	// far more to a listing than a fresh answer nobody waited around for.
+	if stale != nil {
+		return stale
+	}
 
 	timer := time.NewTimer(wait)
 	defer timer.Stop()

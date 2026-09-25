@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -61,6 +62,49 @@ func Open(dbURL string, isPG bool) (*Store, *sql.DB, error) {
 		db.SetConnMaxIdleTime(pgConnMaxIdleTime)
 	}
 	return &Store{db: db, isPG: isPG}, db, nil
+}
+
+// SaveChatNames records display names learned for chats that already exist, so
+// later listings can render them straight from the database instead of paying a
+// WhatsApp round-trip. Chats with no stored messages are skipped — they would
+// not show up in a listing anyway — which keeps this write proportional to what
+// was actually displayed rather than to the size of the account.
+func (s *Store) SaveChatNames(ctx context.Context, account string, names map[string]string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	stmt, err := tx.PrepareContext(ctx, s.reb(
+		`UPDATE chats SET name=? WHERE account_jid=? AND jid=? AND COALESCE(name,'')<>?`))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for jid, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, name, account, jid, name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ChatName returns the stored display name of one chat, or "" when the chat is
+// unknown or still unnamed.
+func (s *Store) ChatName(ctx context.Context, account, jid string) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx, s.reb(
+		`SELECT COALESCE(name,'') FROM chats WHERE account_jid=? AND jid=?`), account, jid).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
 }
 
 // reb rewrites ? placeholders to $1,$2,... for Postgres; SQLite keeps ?.
