@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"  // postgres driver ("postgres")
 	_ "modernc.org/sqlite" // pure-Go sqlite driver ("sqlite"), no CGO
@@ -18,6 +19,17 @@ type Store struct {
 	db   *sql.DB
 	isPG bool
 }
+
+// Pool limits for Postgres, sized for one replica serving a handful of linked
+// accounts: enough concurrency for history sync plus tool calls, far enough
+// below a managed instance's connection limit to leave headroom for everything
+// else pointed at the same database.
+const (
+	pgMaxOpenConns    = 20
+	pgMaxIdleConns    = 10
+	pgConnMaxLifetime = 30 * time.Minute
+	pgConnMaxIdleTime = 5 * time.Minute
+)
 
 // Open opens the application store DB. Postgres when dbURL is a postgres URL,
 // otherwise a modernc SQLite DSN. Returns the *sql.DB too so the caller can share
@@ -33,6 +45,20 @@ func Open(dbURL string, isPG bool) (*Store, *sql.DB, error) {
 	}
 	if err := db.Ping(); err != nil {
 		return nil, nil, fmt.Errorf("ping %s: %w", driver, err)
+	}
+	if isPG {
+		// Bound the Postgres pool. This *sql.DB is shared with whatsmeow's
+		// sqlstore (wa.New passes it to sqlstore.NewWithDB), so every session,
+		// identity and app-state write competes for it with this server's own
+		// queries. Go's default is unlimited, which lets a reconnect storm open
+		// connections until the server refuses them — and a connection error
+		// raised inside whatsmeow's synchronous event handler stalls message
+		// reception. Left unbounded for SQLite, where there is no connection
+		// limit to exhaust and a small pool risks deadlocking nested queries.
+		db.SetMaxOpenConns(pgMaxOpenConns)
+		db.SetMaxIdleConns(pgMaxIdleConns)
+		db.SetConnMaxLifetime(pgConnMaxLifetime)
+		db.SetConnMaxIdleTime(pgConnMaxIdleTime)
 	}
 	return &Store{db: db, isPG: isPG}, db, nil
 }
