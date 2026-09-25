@@ -22,6 +22,29 @@ Exposes the Evolution API as MCP tools so an AI (Claude Code, Claude Desktop, Cu
 
 The same declarative tool catalog backs both transports below.
 
+## Interactive UI (MCP App)
+
+In Claude desktop/web the tools render as **cards inside the conversation**
+instead of raw JSON — chats with previews, a conversation thread with
+play/download for voice notes and photos, contacts, a swipeable groups carousel,
+group detail with participants, plus confirmations for every send, and cards for
+number checks, media, polls, locations, privacy, business profiles, invite links
+and account state.
+
+It follows the [Claude MCP Apps design guidelines][mcp-apps-guidelines] and is
+built on the official [`@modelcontextprotocol/ext-apps`][ext-apps] SDK: all
+structural styling comes from the host's own style tokens (so light/dark follow
+Claude automatically), cards stay within the inline budget and expand to
+fullscreen for search and drill-in.
+
+Hosts without MCP Apps support are unaffected — they ignore `_meta.ui` and still
+receive the text plus structured content.
+
+See [`app/README.md`](app/README.md) for the architecture and how to add a card.
+
+[mcp-apps-guidelines]: https://claude.com/docs/connectors/building/mcp-apps/design-guidelines
+[ext-apps]: https://github.com/modelcontextprotocol/ext-apps
+
 ## Two Modes
 
 | Mode | Transport | "Login" | Best for |
@@ -117,6 +140,38 @@ The connection design mirrors the sibling `@aol/uber-mcp` and `@aol/ifood-mcp`
 servers: a declarative tool array, a single generic dispatcher, and a
 transport‑agnostic credential provider — swap the provider and the same tools run
 over stdio or over multi‑tenant HTTP.
+
+### Go server (whatsmeow) + MCP App
+
+The deployed server is the Go one: it talks to WhatsApp directly through
+[whatsmeow](https://github.com/tulir/whatsmeow) (no Evolution API in the loop)
+and embeds the MCP App UI.
+
+```
+cmd/whatsapp-mcp/       # entrypoint (MCP_MODE=stdio|http)
+internal/
+├── wa/                 # whatsmeow client registry, pairing, send/read helpers
+├── store/              # our own chat/message history (whatsmeow keeps none)
+├── oauth/              # OAuth 2.1 + per-user bearer (multi-tenant HTTP)
+└── mcpserver/
+    ├── server.go       # the whatsapp_* tool catalog
+    ├── view.go         # card payloads (wire contract for the app)
+    ├── app.go          # the ui:// resource + per-tool _meta.ui
+    └── ui/app.html     # built app bundle (committed; go:embed reads it)
+app/                    # MCP App source (Preact + Vite) → ui/app.html
+```
+
+```bash
+# build the UI bundle, then the server
+npm --prefix app ci && npm --prefix app run build
+go build ./cmd/whatsapp-mcp
+
+# or the whole thing, reproducibly
+docker build -f Dockerfile.mcp -t whatsapp-mcp .
+```
+
+The bundle is committed so `go build` needs no Node toolchain; CI rebuilds it and
+fails if it drifts from its source.
 
 ## Scripts
 
