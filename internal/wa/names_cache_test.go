@@ -15,7 +15,7 @@ import (
 func TestConcurrentLookupsShareOneFetch(t *testing.T) {
 	var fetches atomic.Int32
 	release := make(chan struct{})
-	c := newNamesCache(time.Minute)
+	c := newNamesCache(time.Minute, nil)
 
 	fetch := func(context.Context) (map[string]string, error) {
 		fetches.Add(1)
@@ -49,7 +49,7 @@ func TestConcurrentLookupsShareOneFetch(t *testing.T) {
 // Once any answer is cached, a caller must not wait on a refresh: a listing with
 // names a few minutes old beats one that stalls for a round-trip nobody needs.
 func TestCachedNamesAreReturnedWithoutWaitingForTheRefresh(t *testing.T) {
-	c := newNamesCache(time.Nanosecond) // always stale, so every call refreshes
+	c := newNamesCache(time.Nanosecond, nil) // always stale, so every call refreshes
 	first := func(context.Context) (map[string]string, error) {
 		return map[string]string{"a@g.us": "Group A"}, nil
 	}
@@ -73,7 +73,7 @@ func TestCachedNamesAreReturnedWithoutWaitingForTheRefresh(t *testing.T) {
 // still writing the contacts it learned, and killing that mid-transaction
 // poisons the connection it was using.
 func TestSlowFetchIsNotCancelledWhenTheCallerGivesUp(t *testing.T) {
-	c := newNamesCache(time.Minute)
+	c := newNamesCache(time.Minute, nil)
 	started := make(chan struct{})
 	finished := make(chan struct{})
 
@@ -109,7 +109,7 @@ func TestSlowFetchIsNotCancelledWhenTheCallerGivesUp(t *testing.T) {
 
 func TestFreshEntriesSkipTheFetch(t *testing.T) {
 	var fetches atomic.Int32
-	c := newNamesCache(time.Minute)
+	c := newNamesCache(time.Minute, nil)
 	fetch := func(context.Context) (map[string]string, error) {
 		fetches.Add(1)
 		return map[string]string{"a@g.us": "Group A"}, nil
@@ -125,7 +125,7 @@ func TestFreshEntriesSkipTheFetch(t *testing.T) {
 // Stale names beat no names: a listing that shows the previous subjects is far
 // better than one that shows raw identifiers.
 func TestFailedRefreshKeepsPreviousNames(t *testing.T) {
-	c := newNamesCache(time.Nanosecond) // everything is immediately stale
+	c := newNamesCache(time.Nanosecond, nil) // everything is immediately stale
 	ok := func(context.Context) (map[string]string, error) {
 		return map[string]string{"a@g.us": "Group A"}, nil
 	}

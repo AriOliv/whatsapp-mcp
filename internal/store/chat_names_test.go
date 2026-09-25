@@ -65,3 +65,20 @@ func TestChatNameIsEmptyForAnUnknownChat(t *testing.T) {
 		t.Fatalf("got %q, want an empty name", name)
 	}
 }
+
+// The whatsmeow handle must be usable on its own: on Postgres it is a second
+// pool, and on SQLite it is the same handle the store uses.
+func TestOpenReturnsAWorkingHandleForWhatsmeow(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "test.db") +
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	st, waDB, err := Open(dsn, false)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if st == nil || waDB == nil {
+		t.Fatal("Open returned a nil store or handle")
+	}
+	if err := waDB.Ping(); err != nil {
+		t.Fatalf("the whatsmeow handle cannot reach the database: %v", err)
+	}
+}
