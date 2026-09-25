@@ -1205,6 +1205,11 @@ func (m *Manager) groupNames(ctx context.Context, account string, cli *whatsmeow
 		for _, g := range groups {
 			names[g.JID.String()] = g.Name
 		}
+		// Store the whole set, not just what a listing happened to show. This
+		// refresh is the expensive one; writing everything it learned is what
+		// lets the next process start find the names already in the database and
+		// skip it entirely.
+		m.rememberChatNames(account, names)
 		return names, nil
 	})
 }
@@ -1225,6 +1230,7 @@ func (m *Manager) newsletterNames(ctx context.Context, account string, cli *what
 				names[nl.ID.String()] = nl.ThreadMeta.Name.Text
 			}
 		}
+		m.rememberChatNames(account, names)
 		return names, nil
 	})
 }
