@@ -1,11 +1,24 @@
-# Single-binary WhatsApp MCP (whatsmeow, Go). Pure-Go (CGO off) so it runs on
-# distroless static.
+# Single-binary WhatsApp MCP (whatsmeow, Go) with its MCP App UI baked in.
+# Pure-Go (CGO off) so it runs on distroless static.
+
+# 1) Build the MCP App bundle: one self-contained HTML file the Go binary embeds.
+#    Rebuilt from source here so the image can never ship a stale UI.
+FROM node:22-alpine AS ui
+WORKDIR /src/app
+COPY app/package.json app/package-lock.json* ./
+RUN npm ci --no-audit --no-fund
+COPY app/ ./
+# vite emits to ../internal/mcpserver/ui/ (where go:embed reads it).
+RUN npm run build && test -s ../internal/mcpserver/ui/app.html
+
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+# Overwrite the committed bundle with the one just built from source.
+COPY --from=ui /src/internal/mcpserver/ui/app.html ./internal/mcpserver/ui/app.html
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/whatsapp-mcp ./cmd/whatsapp-mcp
 
 FROM gcr.io/distroless/static-debian12:nonroot

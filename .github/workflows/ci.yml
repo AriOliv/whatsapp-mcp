@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  build:
+  # The TypeScript wrapper (src/) — the legacy Evolution-API client.
+  node:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -20,3 +21,39 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  # The Go server (whatsmeow) plus its embedded MCP App bundle.
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build the MCP App bundle
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      # go:embed reads a committed bundle so `go build` needs no node toolchain.
+      # If it drifts from the source, the image would ship a stale UI silently.
+      - name: Bundle is up to date with its source
+        run: |
+          if ! git diff --quiet -- internal/mcpserver/ui/app.html; then
+            echo "::error::internal/mcpserver/ui/app.html is stale."
+            echo "Run 'npm --prefix app ci && npm --prefix app run build' and commit the result."
+            git diff --stat -- internal/mcpserver/ui/app.html
+            exit 1
+          fi
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
