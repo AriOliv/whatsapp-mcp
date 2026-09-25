@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
@@ -39,6 +40,14 @@ type Manager struct {
 	clients map[string]*whatsmeow.Client // key: account JID (user part @ server)
 	def     string                       // default account key (stdio)
 	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
+
+	// Received messages are stored by a single writer goroutine instead of by
+	// the whatsmeow event handler; see ingest.go for why.
+	ingest        chan ingestItem
+	ingestDropped atomic.Uint64
+	ingestFailed  atomic.Uint64
+	ingestDropLog atomic.Int64
+	ingestFailLog atomic.Int64
 
 	groupMu    sync.Mutex
 	groupCache map[string]cachedNames // account JID -> joined-group subjects (ListChats)
@@ -68,7 +77,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 	if err := container.Upgrade(ctx); err != nil {
 		return nil, fmt.Errorf("whatsmeow store upgrade: %w", err)
 	}
-	return &Manager{
+	m := &Manager{
 		container:  container,
 		store:      st,
 		log:        logger,
@@ -76,7 +85,9 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		flows:      map[string]*PairFlow{},
 		groupCache: map[string]cachedNames{},
 		nlCache:    map[string]cachedNames{},
-	}, nil
+	}
+	m.startIngest(ctx)
+	return m, nil
 }
 
 func accountKey(jid *types.JID) string {
@@ -252,7 +263,7 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 					mediaRaw = b
 				}
 			}
-			_ = m.store.SaveMessage(context.Background(), acct, appstore.Message{
+			m.enqueueMessage(acct, appstore.Message{
 				ID:         v.Info.ID,
 				ChatJID:    v.Info.Chat.String(),
 				SenderJID:  v.Info.Sender.String(),
@@ -1059,6 +1070,10 @@ type cachedNames struct {
 // best-effort: any lookup failure leaves that chat's name empty rather than
 // failing the whole listing. Groups use joined-group subjects (cached);
 // individuals use the whatsmeow contact store; status/newsletter are special.
+// chatNameLookupTimeout bounds the WhatsApp round-trips one chat listing may
+// wait on before it gives up and returns the names it already has.
+const chatNameLookupTimeout = 5 * time.Second
+
 func (m *Manager) fillChatNames(ctx context.Context, account string, chats []appstore.Chat) {
 	needGroup, needNewsletter, needOther := false, false, false
 	for i := range chats {
@@ -1083,6 +1098,14 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	if err != nil {
 		return // not connected: leave names empty rather than error the listing
 	}
+	// Resolving names costs WhatsApp round-trips (group subjects, newsletter
+	// names) and one contact read per chat, over a socket that may also be
+	// carrying history sync. Without a deadline a listing can outlive its
+	// caller's own timeout and fail outright, so bound the lookups and fall back
+	// to whatever names we already have — the display name derived from the JID
+	// is a far better outcome than no listing at all.
+	ctx, cancel := context.WithTimeout(ctx, chatNameLookupTimeout)
+	defer cancel()
 	var groups, newsletters map[string]string
 	if needGroup {
 		groups = m.groupNames(ctx, account, cli)
@@ -1094,6 +1117,9 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 		c := &chats[i]
 		if c.Name != "" {
 			continue
+		}
+		if ctx.Err() != nil {
+			return // out of time; the rest keep their JID-derived names
 		}
 		switch {
 		case strings.HasSuffix(c.JID, "@g.us"):
