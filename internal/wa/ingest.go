@@ -36,6 +36,7 @@ const (
 type ingestItem struct {
 	account string
 	msg     appstore.Message
+	push    *InboundEvent // inbound webhook event, sent only after the message is stored
 }
 
 // startIngest launches the single writer that drains received messages into the
@@ -65,9 +66,9 @@ func (m *Manager) startIngest(ctx context.Context) {
 // enqueueMessage hands a received message to the writer. It never blocks: when
 // the queue is full the message is dropped, so a database problem costs stored
 // history instead of freezing reception.
-func (m *Manager) enqueueMessage(account string, msg appstore.Message) {
+func (m *Manager) enqueueMessage(account string, msg appstore.Message, push *InboundEvent) {
 	select {
-	case m.ingest <- ingestItem{account: account, msg: msg}:
+	case m.ingest <- ingestItem{account: account, msg: msg, push: push}:
 	default:
 		n := m.ingestDropped.Add(1)
 		m.warnThrottled(&m.ingestDropLog, "message ingest queue full; %d message(s) dropped so far", n)
@@ -82,6 +83,9 @@ func (m *Manager) writeMessage(it ingestItem) {
 	if err := m.store.SaveMessage(ctx, it.account, it.msg); err != nil {
 		n := m.ingestFailed.Add(1)
 		m.warnThrottled(&m.ingestFailLog, "storing received messages is failing (%d so far), last error: %v", n, err)
+	}
+	if it.push != nil {
+		m.pushInbound(it.push) // even if the save failed: the text still reaches the receiver
 	}
 }
 

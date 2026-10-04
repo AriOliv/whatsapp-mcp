@@ -64,7 +64,7 @@ func TestIngestWriterStoresReceivedMessages(t *testing.T) {
 			ChatJID: "5511888888888@s.whatsapp.net",
 			TS:      int64(i),
 			Body:    "hello",
-		})
+		}, nil)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -93,7 +93,7 @@ func TestEnqueueDoesNotBlockWhenTheWriterIsStuck(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := range 100 {
-			m.enqueueMessage("acct", appstore.Message{ID: fmt.Sprintf("m%d", i)})
+			m.enqueueMessage("acct", appstore.Message{ID: fmt.Sprintf("m%d", i)}, nil)
 		}
 	}()
 
@@ -118,7 +118,7 @@ func TestShutdownFlushesQueuedMessages(t *testing.T) {
 			ID:      fmt.Sprintf("flush-%d", i),
 			ChatJID: "chat@s.whatsapp.net",
 			TS:      int64(i),
-		})
+		}, nil)
 	}
 	cancel() // shutdown while writes are still queued
 
