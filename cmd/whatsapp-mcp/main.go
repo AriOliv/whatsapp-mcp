@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/AriOliv/whatsapp-mcp/internal/config"
+	"github.com/AriOliv/whatsapp-mcp/internal/httpapi"
 	"github.com/AriOliv/whatsapp-mcp/internal/mcpserver"
 	"github.com/AriOliv/whatsapp-mcp/internal/oauth"
 	"github.com/AriOliv/whatsapp-mcp/internal/store"
@@ -73,6 +74,12 @@ func main() {
 		return
 	}
 
+	gwAccounts := wa.ParseAccounts(cfg.InboundWebhookAccounts)
+	if err := mgr.SetWebhook(ctx, wa.WebhookConfig{URL: cfg.InboundWebhookURL, Secret: cfg.InboundWebhookSecret,
+		Accounts: gwAccounts}); err != nil {
+		fatal(err)
+	}
+
 	n, err := mgr.LoadAndConnect(ctx)
 	if err != nil {
 		fatal(err)
@@ -94,6 +101,10 @@ func main() {
 		handlers := oauth.NewHandlers(oauthStore, mgr, cfg.PublicURL)
 		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 		handlers.Register(mux, mcpHandler) // mounts bearer-guarded /mcp + OAuth + login routes
+		if api := httpapi.New(mgr, cfg.GatewayAPIToken, gwAccounts); api != nil {
+			api.Register(mux) // /api/* for the trusted gateway backend (static bearer, allowed accounts only)
+			fmt.Fprintf(os.Stderr, "gateway API on /api/* for %d account(s)\n", len(gwAccounts))
+		}
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("content-type", "application/json")
 			fmt.Fprintf(w, `{"ok":true,"accounts":%d}`, n)

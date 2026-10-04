@@ -51,6 +51,10 @@ type Manager struct {
 
 	// Display-name caches. Both refresh under a single flight; see names_cache.go
 	// for why a burst of concurrent refreshes is dangerous.
+	// Inbound webhook (optional; see webhook.go).
+	webhook    *WebhookConfig
+	outboxKick chan struct{}
+
 	groupNameCache      *namesCache // account -> joined-group subjects
 	newsletterNameCache *namesCache // account -> subscribed-newsletter names
 }
@@ -83,6 +87,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		log:                 logger,
 		clients:             map[string]*whatsmeow.Client{},
 		flows:               map[string]*PairFlow{},
+		outboxKick:          make(chan struct{}, 1),
 		groupNameCache:      newNamesCache(groupNameTTL, logSlowRefresh(logger, "joined groups")),
 		newsletterNameCache: newNamesCache(groupNameTTL, logSlowRefresh(logger, "newsletters")),
 	}
@@ -276,7 +281,7 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 					mediaRaw = b
 				}
 			}
-			m.enqueueMessage(acct, appstore.Message{
+			msg := appstore.Message{
 				ID:         v.Info.ID,
 				ChatJID:    v.Info.Chat.String(),
 				SenderJID:  v.Info.Sender.String(),
@@ -285,7 +290,8 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 				Body:       body,
 				MediaType:  mt,
 				MediaProto: mediaRaw,
-			})
+			}
+			m.enqueueMessage(acct, msg, m.inboundFor(context.Background(), acct, v, msg))
 		case *events.LoggedOut:
 			key := accountKey(cli.Store.ID)
 			m.mu.Lock()

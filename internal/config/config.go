@@ -27,6 +27,12 @@ type Config struct {
 	// DeviceName is what shows up under "Linked devices" in the WhatsApp app.
 	// Set at pairing time via store.DeviceProps.Os; renaming needs a re-link.
 	DeviceName string
+	// Inbound webhook + gateway REST API (both optional): one paired number used
+	// as a service's front door. Accounts are phone digits, comma-separated.
+	InboundWebhookURL      string
+	InboundWebhookSecret   string
+	InboundWebhookAccounts string
+	GatewayAPIToken        string
 }
 
 func env(key, def string) string {
@@ -49,6 +55,11 @@ func Load() Config {
 		PublicURL:  strings.TrimRight(env("PUBLIC_URL", "http://localhost:3000"), "/"),
 		JWTSecret:  os.Getenv("MCP_JWT_SECRET"),
 		DeviceName: env("WA_DEVICE_NAME", "Avenia WhatsApp MCP"),
+
+		InboundWebhookURL:      os.Getenv("INBOUND_WEBHOOK_URL"),
+		InboundWebhookSecret:   os.Getenv("INBOUND_WEBHOOK_SECRET"),
+		InboundWebhookAccounts: os.Getenv("INBOUND_WEBHOOK_ACCOUNTS"),
+		GatewayAPIToken:        os.Getenv("GATEWAY_API_TOKEN"),
 	}
 }
 
