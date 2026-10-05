@@ -47,3 +47,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace go.mau.fi/whatsmeow => github.com/AriOliv/whatsmeow v0.0.0-20261005215008-85135d6ffec3

@@ -341,6 +341,78 @@ func (m *Manager) SendText(ctx context.Context, account, to, text string) (strin
 	return resp.ID, nil
 }
 
+// SendResult reports an interactive send: the message ID and whether the
+// plain-text fallback was sent instead of the interactive message.
+type SendResult struct {
+	ID       string
+	Fallback bool
+	Err      string // why the interactive send was refused, when Fallback is true
+}
+
+// SendButtons sends a NativeFlow buttons message. flavor picks the stanza-node
+// shape (FlavorMixed by default). If WhatsApp refuses it and fallback is set, the
+// same content goes out as plain text instead.
+func (m *Manager) SendButtons(ctx context.Context, account, to string, spec ButtonsSpec, flavor string, fallback bool) (SendResult, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return SendResult{}, err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return SendResult{}, err
+	}
+	msg, err := buildButtonsMessage(spec)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if flavor == "" {
+		flavor = FlavorMixed
+	}
+	nodes := buttonsNodes(jid, flavor, time.Now())
+	resp, err := cli.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{AdditionalNodes: &nodes})
+	if err == nil {
+		return SendResult{ID: resp.ID}, nil
+	}
+	if !fallback {
+		return SendResult{}, fmt.Errorf("interactive send refused: %w", err)
+	}
+	resp, ferr := cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(buttonsFallbackText(spec))})
+	if ferr != nil {
+		return SendResult{}, fmt.Errorf("interactive send refused (%v) and fallback failed: %w", err, ferr)
+	}
+	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
+}
+
+// SendList sends a single-select list message. whatsmeow adds its <biz><list/>
+// node itself. If WhatsApp refuses it and fallback is set, the rows go out as a
+// numbered plain-text list instead.
+func (m *Manager) SendList(ctx context.Context, account, to string, spec ListSpec, fallback bool) (SendResult, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return SendResult{}, err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return SendResult{}, err
+	}
+	msg, err := buildListMessage(spec)
+	if err != nil {
+		return SendResult{}, err
+	}
+	resp, err := cli.SendMessage(ctx, jid, msg)
+	if err == nil {
+		return SendResult{ID: resp.ID}, nil
+	}
+	if !fallback {
+		return SendResult{}, fmt.Errorf("list send refused: %w", err)
+	}
+	resp, ferr := cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(listFallbackText(spec))})
+	if ferr != nil {
+		return SendResult{}, fmt.Errorf("list send refused (%v) and fallback failed: %w", err, ferr)
+	}
+	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
+}
+
 // SendMedia uploads and sends an image/video/document/audio. `data` is base64 or
 // an http(s) URL; kind is one of image|video|document|audio.
 func (m *Manager) SendMedia(ctx context.Context, account, to, kind, data, caption, mimeType, fileName string) (string, error) {
@@ -1259,7 +1331,29 @@ func messageText(m *waE2E.Message) string {
 	if vm := m.GetVideoMessage(); vm != nil {
 		return vm.GetCaption()
 	}
+	if r := interactiveReply(m); r != nil {
+		return replyText(r)
+	}
+	if im := m.GetInteractiveMessage(); im != nil {
+		return im.GetBody().GetText()
+	}
+	if lm := m.GetListMessage(); lm != nil {
+		return lm.GetDescription()
+	}
 	return ""
+}
+
+// replyText is how a button/list tap is stored as a message body. The id is kept
+// so readers of find_messages can tell which option was picked.
+func replyText(r *Reply) string {
+	switch {
+	case r.Text != "" && r.ID != "" && r.ID != r.Text:
+		return fmt.Sprintf("%s [%s:%s]", r.Text, r.Kind, r.ID)
+	case r.Text != "":
+		return r.Text
+	default:
+		return fmt.Sprintf("[%s:%s]", r.Kind, r.ID)
+	}
 }
 
 func mediaType(m *waE2E.Message) string {

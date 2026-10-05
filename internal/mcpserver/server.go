@@ -267,6 +267,30 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			}
 			return done(pollView{Kind: kindPoll, ID: id, To: in.Number, Name: in.Name, Options: in.Values, Selectable: in.SelectableCount}, nil)
 		})
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_buttons", Description: "Send a message with buttons. " +
+		"Button types: quick_reply (up to 3; the tap comes back as a reply with its id), url (opens an https link), " +
+		"call (dials a number), copy (copies a code, e.g. a PIX key). Up to 10 buttons. " +
+		"Unofficial-client feature: if WhatsApp refuses it, set fallbackText=true to send the same content as plain text. " +
+		"If buttons are accepted but don't render, retry with flavor=full."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendButtonsArgs) (*mcp.CallToolResult, any, error) {
+			spec := wa.ButtonsSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, Buttons: in.Buttons}
+			res, err := mgr.SendButtons(ctx, acct(ctx), in.Number, spec, in.Flavor, in.FallbackText)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "buttons", in.Text), nil)
+		})
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_list", Description: "Send a list message: one button that opens " +
+		"a menu of options grouped in sections (up to 10 sections, 10 rows each). The row picked comes back as a reply with its id. " +
+		"Unofficial-client feature: set fallbackText=true to send the options as a numbered plain-text list if WhatsApp refuses it."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendListArgs) (*mcp.CallToolResult, any, error) {
+			spec := wa.ListSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, ButtonText: in.ButtonText, Sections: in.Sections}
+			res, err := mgr.SendList(ctx, acct(ctx), in.Number, spec, in.FallbackText)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "list", in.Text), nil)
+		})
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_delete_message", Description: "Delete a message for everyone (revoke)."}),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in deleteMessageArgs) (*mcp.CallToolResult, any, error) {
 			id, err := mgr.DeleteMessage(ctx, acct(ctx), in.RemoteJID, in.ID)
@@ -488,6 +512,26 @@ type emptyArgs struct{}
 type sendTextArgs struct {
 	Number string `json:"number" jsonschema:"WhatsApp number or JID"`
 	Text   string `json:"text" jsonschema:"Message text"`
+}
+
+type sendButtonsArgs struct {
+	Number       string      `json:"number" jsonschema:"WhatsApp number or JID"`
+	Text         string      `json:"text" jsonschema:"Message body"`
+	Title        string      `json:"title,omitempty" jsonschema:"Optional bold header"`
+	Footer       string      `json:"footer,omitempty" jsonschema:"Optional small footer text"`
+	Buttons      []wa.Button `json:"buttons" jsonschema:"1-10 buttons; type is quick_reply|url|call|copy; quick_reply takes id, url takes url, call takes phone, copy takes code"`
+	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default) or full; try full if buttons don't render"`
+	FallbackText bool        `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the buttons, send the same content as plain text"`
+}
+
+type sendListArgs struct {
+	Number       string           `json:"number" jsonschema:"WhatsApp number or JID"`
+	Text         string           `json:"text" jsonschema:"Message body"`
+	ButtonText   string           `json:"buttonText" jsonschema:"Label of the button that opens the list"`
+	Title        string           `json:"title,omitempty" jsonschema:"Optional bold header"`
+	Footer       string           `json:"footer,omitempty" jsonschema:"Optional small footer text"`
+	Sections     []wa.ListSection `json:"sections" jsonschema:"1-10 sections, each with a title and 1-10 rows {id, title, description}"`
+	FallbackText bool             `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the list, send the options as a numbered plain-text list"`
 }
 
 type sendMediaArgs struct {

@@ -11,6 +11,7 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -322,6 +323,23 @@ func newSentView(id, to, what, preview string) sentView {
 		Preview:  truncate(preview, 160),
 		TSMillis: time.Now().UnixMilli(),
 	}
+}
+
+// interactiveSentView is a sentView plus whether the plain-text fallback went out
+// instead of the buttons/list (and why).
+type interactiveSentView struct {
+	sentView
+	Fallback       bool   `json:"fallback,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+}
+
+func newInteractiveSentView(ctx context.Context, mgr *wa.Manager, res wa.SendResult, to, what, preview string) interactiveSentView {
+	if res.Fallback {
+		what += " (sent as plain text)"
+	}
+	v := newSentView(res.ID, to, what, preview)
+	v.ToName = mgr.ChatName(ctx, acct(ctx), to)
+	return interactiveSentView{sentView: v, Fallback: res.Fallback, FallbackReason: res.Err}
 }
 
 type receiptView struct {
