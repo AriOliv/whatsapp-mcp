@@ -2,6 +2,7 @@ package wa
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -105,8 +106,8 @@ func TestBuildButtonsMessageErrors(t *testing.T) {
 		}()},
 	}
 	for name, spec := range cases {
-		if _, err := buildButtonsMessage(spec); err == nil {
-			t.Errorf("%s: want error", name)
+		if _, err := buildButtonsMessage(spec); !errors.Is(err, ErrInvalidSpec) {
+			t.Errorf("%s: want ErrInvalidSpec, got %v", name, err)
 		}
 	}
 }
@@ -148,8 +149,8 @@ func TestBuildListMessageErrors(t *testing.T) {
 		"row title":   {Text: "x", ButtonText: "b", Sections: []ListSection{{Rows: []ListRow{{ID: "a"}}}}},
 	}
 	for name, spec := range cases {
-		if _, err := buildListMessage(spec); err == nil {
-			t.Errorf("%s: want error", name)
+		if _, err := buildListMessage(spec); !errors.Is(err, ErrInvalidSpec) {
+			t.Errorf("%s: want ErrInvalidSpec, got %v", name, err)
 		}
 	}
 }

@@ -8,15 +8,20 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/AriOliv/whatsapp-mcp/internal/wa"
 )
 
 // Sender is the subset of wa.Manager the API needs (an interface keeps it testable).
 type Sender interface {
 	SendText(ctx context.Context, account, to, text string) (string, error)
 	SendMedia(ctx context.Context, account, to, kind, data, caption, mimeType, fileName string) (string, error)
+	SendButtons(ctx context.Context, account, to string, spec wa.ButtonsSpec, flavor string, fallback bool) (wa.SendResult, error)
+	SendList(ctx context.Context, account, to string, spec wa.ListSpec, fallback bool) (wa.SendResult, error)
 	ChatPresence(ctx context.Context, account, to, state string) error
 	MarkRead(ctx context.Context, account, chat, sender string, ids []string) error
 	DownloadMedia(ctx context.Context, account, msgID string) ([]byte, string, string, error)
@@ -41,6 +46,8 @@ func New(s Sender, token string, accounts map[string]bool) *API {
 // Register mounts the routes on mux.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/send", a.guard(a.send))
+	mux.HandleFunc("POST /api/send/buttons", a.guard(a.sendButtons))
+	mux.HandleFunc("POST /api/send/list", a.guard(a.sendList))
 	mux.HandleFunc("POST /api/presence", a.guard(a.presence))
 	mux.HandleFunc("POST /api/read", a.guard(a.read))
 	mux.HandleFunc("GET /api/media/{account}/{id}", a.guard(a.media))
@@ -102,6 +109,80 @@ func (a *API) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"id": id})
+}
+
+type sendButtonsReq struct {
+	Account      string      `json:"account"`
+	To           string      `json:"to"`
+	Text         string      `json:"text"`
+	Title        string      `json:"title,omitempty"`
+	Footer       string      `json:"footer,omitempty"`
+	Buttons      []wa.Button `json:"buttons"`
+	Flavor       string      `json:"flavor,omitempty"`       // mixed (default) | full
+	FallbackText bool        `json:"fallbackText,omitempty"` // send as plain text if WhatsApp refuses
+}
+
+type sendListReq struct {
+	Account      string           `json:"account"`
+	To           string           `json:"to"`
+	Text         string           `json:"text"`
+	ButtonText   string           `json:"buttonText"`
+	Title        string           `json:"title,omitempty"`
+	Footer       string           `json:"footer,omitempty"`
+	Sections     []wa.ListSection `json:"sections"`
+	FallbackText bool             `json:"fallbackText,omitempty"`
+}
+
+type sendResultResp struct {
+	ID             string `json:"id"`
+	Fallback       bool   `json:"fallback,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+}
+
+func (a *API) sendButtons(w http.ResponseWriter, r *http.Request) {
+	var req sendButtonsReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowed(w, req.Account) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	spec := wa.ButtonsSpec{Text: req.Text, Title: req.Title, Footer: req.Footer, Buttons: req.Buttons}
+	res, err := a.s.SendButtons(ctx, req.Account, req.To, spec, req.Flavor, req.FallbackText)
+	a.writeSendResult(w, res, err)
+}
+
+func (a *API) sendList(w http.ResponseWriter, r *http.Request) {
+	var req sendListReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowed(w, req.Account) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	spec := wa.ListSpec{Text: req.Text, Title: req.Title, Footer: req.Footer, ButtonText: req.ButtonText, Sections: req.Sections}
+	res, err := a.s.SendList(ctx, req.Account, req.To, spec, req.FallbackText)
+	a.writeSendResult(w, res, err)
+}
+
+// writeSendResult maps an interactive send to HTTP: spec validation errors are
+// the caller's fault (400); a refusal by WhatsApp or a transport error is 502.
+func (a *API) writeSendResult(w http.ResponseWriter, res wa.SendResult, err error) {
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, wa.ErrInvalidSpec) {
+			code = http.StatusBadRequest
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, sendResultResp{ID: res.ID, Fallback: res.Fallback, FallbackReason: res.Err})
 }
 
 func (a *API) presence(w http.ResponseWriter, r *http.Request) {

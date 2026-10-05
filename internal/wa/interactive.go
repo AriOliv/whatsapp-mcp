@@ -10,6 +10,7 @@ package wa
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,6 +21,14 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
+
+// ErrInvalidSpec wraps every validation error from the button/list builders, so
+// callers can tell a bad request apart from WhatsApp refusing the send.
+var ErrInvalidSpec = errors.New("invalid interactive message")
+
+func invalid(format string, a ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidSpec, fmt.Sprintf(format, a...))
+}
 
 // Button kinds accepted by the send_buttons tool.
 const (
@@ -87,10 +96,10 @@ type ListSpec struct {
 func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 	text := strings.TrimSpace(spec.Text)
 	if text == "" {
-		return nil, fmt.Errorf("text is required")
+		return nil, invalid("text is required")
 	}
 	if len(spec.Buttons) == 0 || len(spec.Buttons) > maxButtons {
-		return nil, fmt.Errorf("need between 1 and %d buttons, got %d", maxButtons, len(spec.Buttons))
+		return nil, invalid("need between 1 and %d buttons, got %d", maxButtons, len(spec.Buttons))
 	}
 	quick := 0
 	ids := map[string]bool{}
@@ -98,7 +107,7 @@ func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 	for i, b := range spec.Buttons {
 		label := strings.TrimSpace(b.Text)
 		if label == "" {
-			return nil, fmt.Errorf("button %d: text is required", i+1)
+			return nil, invalid("button %d: text is required", i+1)
 		}
 		var name string
 		params := map[string]string{"display_text": label}
@@ -110,29 +119,29 @@ func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 				id = label
 			}
 			if ids[id] {
-				return nil, fmt.Errorf("button %d: duplicate id %q", i+1, id)
+				return nil, invalid("button %d: duplicate id %q", i+1, id)
 			}
 			ids[id] = true
 			name, params["id"] = "quick_reply", id
 		case ButtonURL:
 			u := strings.TrimSpace(b.URL)
 			if !strings.HasPrefix(u, "https://") {
-				return nil, fmt.Errorf("button %d: url must start with https://", i+1)
+				return nil, invalid("button %d: url must start with https://", i+1)
 			}
 			name, params["url"], params["merchant_url"] = "cta_url", u, u
 		case ButtonCall:
 			phone := strings.TrimSpace(b.Phone)
 			if onlyDigits(phone) == "" {
-				return nil, fmt.Errorf("button %d: phone is required", i+1)
+				return nil, invalid("button %d: phone is required", i+1)
 			}
 			name, params["phone_number"] = "cta_call", phone
 		case ButtonCopy:
 			if strings.TrimSpace(b.Code) == "" {
-				return nil, fmt.Errorf("button %d: code is required", i+1)
+				return nil, invalid("button %d: code is required", i+1)
 			}
 			name, params["copy_code"] = "cta_copy", b.Code
 		default:
-			return nil, fmt.Errorf("button %d: unknown type %q (use quick_reply, url, call or copy)", i+1, b.Type)
+			return nil, invalid("button %d: unknown type %q (use quick_reply, url, call or copy)", i+1, b.Type)
 		}
 		raw, err := json.Marshal(params)
 		if err != nil {
@@ -144,7 +153,7 @@ func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 		})
 	}
 	if quick > maxQuickReplies {
-		return nil, fmt.Errorf("at most %d quick_reply buttons, got %d", maxQuickReplies, quick)
+		return nil, invalid("at most %d quick_reply buttons, got %d", maxQuickReplies, quick)
 	}
 
 	im := &waE2E.InteractiveMessage{
@@ -171,33 +180,33 @@ func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 func buildListMessage(spec ListSpec) (*waE2E.Message, error) {
 	text := strings.TrimSpace(spec.Text)
 	if text == "" {
-		return nil, fmt.Errorf("text is required")
+		return nil, invalid("text is required")
 	}
 	buttonText := strings.TrimSpace(spec.ButtonText)
 	if buttonText == "" {
-		return nil, fmt.Errorf("buttonText is required")
+		return nil, invalid("buttonText is required")
 	}
 	if len(spec.Sections) == 0 || len(spec.Sections) > maxSections {
-		return nil, fmt.Errorf("need between 1 and %d sections, got %d", maxSections, len(spec.Sections))
+		return nil, invalid("need between 1 and %d sections, got %d", maxSections, len(spec.Sections))
 	}
 	ids := map[string]bool{}
 	sections := make([]*waE2E.ListMessage_Section, 0, len(spec.Sections))
 	for i, s := range spec.Sections {
 		if len(s.Rows) == 0 || len(s.Rows) > maxRows {
-			return nil, fmt.Errorf("section %d: need between 1 and %d rows, got %d", i+1, maxRows, len(s.Rows))
+			return nil, invalid("section %d: need between 1 and %d rows, got %d", i+1, maxRows, len(s.Rows))
 		}
 		rows := make([]*waE2E.ListMessage_Row, 0, len(s.Rows))
 		for j, r := range s.Rows {
 			title := strings.TrimSpace(r.Title)
 			if title == "" {
-				return nil, fmt.Errorf("section %d row %d: title is required", i+1, j+1)
+				return nil, invalid("section %d row %d: title is required", i+1, j+1)
 			}
 			id := strings.TrimSpace(r.ID)
 			if id == "" {
 				id = title
 			}
 			if ids[id] {
-				return nil, fmt.Errorf("section %d row %d: duplicate id %q", i+1, j+1, id)
+				return nil, invalid("section %d row %d: duplicate id %q", i+1, j+1, id)
 			}
 			ids[id] = true
 			rows = append(rows, &waE2E.ListMessage_Row{
