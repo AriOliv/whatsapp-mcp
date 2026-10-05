@@ -39,8 +39,9 @@ type InboundEvent struct {
 	FromJID   string `json:"from_jid"`             // raw sender JID (may be @lid)
 	PushName  string `json:"push_name,omitempty"`  // sender's profile name
 	TS        int64  `json:"ts"`                   // unix millis
-	Type      string `json:"type"`                 // text | image | audio | video | document | sticker | other
-	Text      string `json:"text,omitempty"`       // text or caption
+	Type      string `json:"type"`                 // text | image | audio | video | document | sticker | button_reply | list_reply
+	Text      string `json:"text,omitempty"`       // text or caption (for a reply, the label tapped)
+	ReplyID   string `json:"reply_id,omitempty"`   // button_reply/list_reply: id of the button/row tapped
 	MediaType string `json:"media_type,omitempty"` // as stored (download via GET /api/media/{id})
 	QuotedID  string `json:"quoted_id,omitempty"`
 }
@@ -106,8 +107,12 @@ func (m *Manager) inboundFor(ctx context.Context, account string, v *events.Mess
 	if msg.MediaType != "" {
 		typ = msg.MediaType
 	}
+	text, replyID := msg.Body, ""
+	if r := interactiveReply(v.Message); r != nil {
+		typ, text, replyID = r.Kind+"_reply", r.Text, r.ID
+	}
 	ev := &InboundEvent{Account: account, ID: info.ID, From: from, FromJID: info.Sender.ToNonAD().String(),
-		PushName: info.PushName, TS: info.Timestamp.UnixMilli(), Type: typ, Text: msg.Body, MediaType: msg.MediaType}
+		PushName: info.PushName, TS: info.Timestamp.UnixMilli(), Type: typ, Text: text, ReplyID: replyID, MediaType: msg.MediaType}
 	if ci := v.Message.GetExtendedTextMessage().GetContextInfo(); ci != nil {
 		ev.QuotedID = ci.GetStanzaID()
 	}
