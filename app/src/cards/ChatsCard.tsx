@@ -38,7 +38,7 @@ function ChatItem({ chat, onOpen }: { chat: ChatRow; onOpen: (c: ChatRow) => voi
   const preview = chat.preview?.trim();
   return (
     <button class="item" onClick={() => onOpen(chat)} aria-label={`Abrir conversa com ${name}`}>
-      <Avatar name={chat.name} icon={chatIcon(chat)} />
+      <Avatar name={chat.name} url={chat.picture_url} icon={chatIcon(chat)} />
       <div class="grow stack" style={{ gap: "2px" }}>
         <div class="row-between">
           <span class="strong truncate">{name}</span>

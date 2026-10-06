@@ -56,7 +56,8 @@ type Manager struct {
 	webhook    *WebhookConfig
 	outboxKick chan struct{}
 
-	publicURL string // base of web-form links; "" = forms disabled (see forms.go)
+	publicURL string        // base of web-form links; "" = forms disabled (see forms.go)
+	pictures  *pictureCache // profile-picture URLs for list rows (see pictures.go)
 
 	groupNameCache      *namesCache // account -> joined-group subjects
 	newsletterNameCache *namesCache // account -> subscribed-newsletter names
@@ -91,6 +92,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		clients:             map[string]*whatsmeow.Client{},
 		flows:               map[string]*PairFlow{},
 		outboxKick:          make(chan struct{}, 1),
+		pictures:            newPictureCache(),
 		groupNameCache:      newNamesCache(groupNameTTL, logSlowRefresh(logger, "joined groups")),
 		newsletterNameCache: newNamesCache(groupNameTTL, logSlowRefresh(logger, "newsletters")),
 	}

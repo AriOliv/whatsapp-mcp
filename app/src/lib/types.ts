@@ -19,6 +19,7 @@ export interface ChatRow {
   preview?: string;
   media_type?: string;
   from_me?: boolean;
+  picture_url?: string;
 }
 
 export interface MessageRow {
@@ -42,6 +43,7 @@ export interface ContactRow {
   PushName?: string;
   BusinessName?: string;
   RedactedPhone?: string;
+  picture_url?: string;
 }
 
 export interface GroupRow {
@@ -55,6 +57,7 @@ export interface GroupRow {
   is_community?: boolean;
   created?: string;
   am_admin?: boolean;
+  picture_url?: string;
 }
 
 export interface ParticipantRow {
@@ -63,6 +66,7 @@ export interface ParticipantRow {
   number?: string;
   is_admin?: boolean;
   is_super_admin?: boolean;
+  picture_url?: string;
 }
 
 export interface NumberRow {

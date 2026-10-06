@@ -94,7 +94,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			if err != nil {
 				return done(nil, err)
 			}
-			return done(contactsView{Kind: kindContacts, Contacts: list, Total: total, Shown: len(list), Query: in.Query}, nil)
+			return done(contactsView{Kind: kindContacts, Contacts: withContactPictures(ctx, mgr, list), Total: total, Shown: len(list), Query: in.Query}, nil)
 		})
 
 	// --- chats & messages (our own store) ---
@@ -108,7 +108,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			for _, c := range chats {
 				jids = append(jids, c.JID)
 			}
-			return done(newChatsView(chats, mgr.ChatPreviews(ctx, acct(ctx), jids), accountOf(ctx, mgr)), nil)
+			return done(withChatPictures(ctx, mgr, newChatsView(chats, mgr.ChatPreviews(ctx, acct(ctx), jids), accountOf(ctx, mgr))), nil)
 		})
 
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_find_messages", Description: "List messages in a chat (from local history), newest first."}),
@@ -159,7 +159,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 					out = append(out, newGroupView(g, self))
 				}
 			}
-			return done(groupsView{Kind: kindGroups, Groups: out, Total: total, Shown: len(out), Query: in.Query}, nil)
+			return done(groupsView{Kind: kindGroups, Groups: withGroupPictures(ctx, mgr, out), Total: total, Shown: len(out), Query: in.Query}, nil)
 		})
 
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_group_info", Description: "Get info for one group by JID, including its participants."}),
@@ -171,8 +171,8 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			}
 			return done(groupDetailView{
 				Kind:         kindGroup,
-				Group:        newGroupView(g, mgr.SelfJID(a)),
-				Participants: newParticipantViews(g.Participants),
+				Group:        withGroupPictures(ctx, mgr, []groupView{newGroupView(g, mgr.SelfJID(a))})[0],
+				Participants: withParticipantPictures(ctx, mgr, newParticipantViews(g.Participants)),
 			}, nil)
 		})
 
@@ -380,7 +380,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			return done(participantsView{
 				Kind:         kindParticipants,
 				Group:        groupRef{JID: in.GroupJID, Name: mgr.ChatName(ctx, a, in.GroupJID)},
-				Participants: newParticipantViews(ps),
+				Participants: withParticipantPictures(ctx, mgr, newParticipantViews(ps)),
 			}, nil)
 		})
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_fetch_profile", Description: "Fetch a number's profile (name, status and picture)."}),

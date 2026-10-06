@@ -17,7 +17,7 @@ function ContactItem({ c, onPick }: { c: ContactRow; onPick: (c: ContactRow) => 
   const number = c.Number ? phone(c.Number) : c.RedactedPhone || "número privado";
   return (
     <button class="item" onClick={() => onPick(c)} aria-label={`Ver ${name}`}>
-      <Avatar name={name} icon="user" />
+      <Avatar name={name} url={c.picture_url} icon="user" />
       <div class="grow stack" style={{ gap: "2px" }}>
         <div class="row" style={{ gap: "6px" }}>
           <span class="strong truncate">{name}</span>
