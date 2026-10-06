@@ -42,7 +42,7 @@ const (
 // which one a given account/recipient accepts has shifted over time.
 const (
 	FlavorMixed = "mixed" // <biz><interactive><native_flow name="mixed"/></interactive></biz>
-	FlavorFull  = "full"  // same, with the actor/storage/privacy attrs and a quality_control node
+	FlavorFull  = "full"  // same, with the actor/storage/privacy attrs and a quality_control node; WhatsApp then adds an (i) "secure service from Meta" note
 	FlavorBot   = "bot"   // mixed plus <bot biz_bot="1"/> in 1:1 chats: WhatsApp then labels the message "AI ✨"
 )
 
