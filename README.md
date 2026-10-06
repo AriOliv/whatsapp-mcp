@@ -118,6 +118,12 @@ instances.
 
 Health check: `GET ${PUBLIC_URL}/healthz`.
 
+## Gateway REST API
+
+Besides the per-user OAuth `/mcp`, HTTP mode can expose `/api/*` for one trusted backend that uses a paired number as its WhatsApp front door: send text, media, buttons, lists and forms, presence/read receipts, media download and account status. Set `GATEWAY_API_TOKEN` (static bearer, ≥24 chars) and `GATEWAY_ACCOUNTS` (the numbers it may drive). Inbound messages, button taps and submitted forms are pushed to `INBOUND_WEBHOOK_URL`, HMAC-signed with `INBOUND_WEBHOOK_SECRET`.
+
+The full contract is in [`openapi.json`](openapi.json) (OpenAPI 3.1): open it in [Swagger Editor](https://editor.swagger.io) or import it in Postman (*Import → File*), then set the bearer token on the collection. A test fails if a route is added without being documented there.
+
 ## Architecture
 
 ```
