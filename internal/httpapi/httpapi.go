@@ -122,7 +122,7 @@ type sendButtonsReq struct {
 	Title        string      `json:"title,omitempty"`
 	Footer       string      `json:"footer,omitempty"`
 	Buttons      []wa.Button `json:"buttons"`
-	Flavor       string      `json:"flavor,omitempty"`       // mixed (default) | full
+	Flavor       string      `json:"flavor,omitempty"`       // mixed (default) | full | bot (adds the "AI" label)
 	FallbackText bool        `json:"fallbackText,omitempty"` // send as plain text if WhatsApp refuses
 }
 

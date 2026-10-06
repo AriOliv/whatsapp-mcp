@@ -169,11 +169,8 @@ func TestButtonsNodes(t *testing.T) {
 	group := types.NewJID("123", types.GroupServer)
 
 	nodes := buttonsNodes(dm, FlavorMixed, now)
-	if got := strings.Join(nodeTags(nodes), ","); got != "biz,bot" {
-		t.Fatalf("dm nodes = %s", got)
-	}
-	if nodes[1].Attrs["biz_bot"] != "1" {
-		t.Fatalf("bot attrs = %v", nodes[1].Attrs)
+	if got := strings.Join(nodeTags(nodes), ","); got != "biz" {
+		t.Fatalf("dm nodes = %s (no <bot> node by default: it labels the message \"AI\")", got)
 	}
 	biz := nodes[0]
 	if len(biz.Attrs) != 0 {
@@ -188,7 +185,11 @@ func TestButtonsNodes(t *testing.T) {
 		t.Fatalf("native_flow = %+v", nf)
 	}
 
-	if got := strings.Join(nodeTags(buttonsNodes(group, FlavorMixed, now)), ","); got != "biz" {
+	bot := buttonsNodes(dm, FlavorBot, now)
+	if got := strings.Join(nodeTags(bot), ","); got != "biz,bot" || bot[1].Attrs["biz_bot"] != "1" {
+		t.Fatalf("bot flavor dm nodes = %s %v", got, bot)
+	}
+	if got := strings.Join(nodeTags(buttonsNodes(group, FlavorBot, now)), ","); got != "biz" {
 		t.Fatalf("group nodes = %s (no bot node in groups)", got)
 	}
 
