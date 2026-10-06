@@ -1,5 +1,6 @@
 /** Shared presentational atoms: avatar, badge, states. No host calls here. */
 import type { ComponentChildren } from "preact";
+import { useState } from "preact/hooks";
 import { Icon, type IconName } from "./Icon";
 
 /** Deterministic initials from a display name (never the raw JID digits). */
@@ -26,7 +27,10 @@ export function Avatar({
   icon?: IconName;
 }) {
   const cls = `avatar${size === "sm" ? " avatar-sm" : size === "lg" ? " avatar-lg" : ""}`;
-  if (url) return <img class={cls} src={url} alt="" loading="lazy" />;
+  const [broken, setBroken] = useState<string | undefined>();
+  if (url && broken !== url) {
+    return <img class={cls} src={url} alt="" loading="lazy" referrerpolicy="no-referrer" onError={() => setBroken(url)} />;
+  }
   const text = initials(name ?? "");
   return (
     <div class={cls} aria-hidden="true">

@@ -17,7 +17,7 @@ function GroupSlide({ g, onOpen }: { g: GroupRow; onOpen: (g: GroupRow) => void 
   return (
     <div class="slide">
       <div class="row">
-        <Avatar name={name} icon="group" />
+        <Avatar name={name} url={g.picture_url} icon="group" />
         <div class="grow" style={{ minWidth: 0 }}>
           <div class="strong truncate">{name}</div>
           <div class="cap">{count(g.participant_count)} participantes</div>
@@ -107,7 +107,7 @@ export function GroupsCard({
           <div>
             {groups.map((g) => (
               <button key={g.jid} class="item" onClick={() => onOpen(g)}>
-                <Avatar name={displayName(g)} icon="group" />
+                <Avatar name={displayName(g)} url={g.picture_url} icon="group" />
                 <div class="grow stack" style={{ gap: "2px" }}>
                   <span class="strong truncate">{displayName(g)}</span>
                   <span class="cap truncate">{count(g.participant_count)} participantes{g.topic ? ` · ${g.topic}` : ""}</span>
@@ -139,7 +139,7 @@ function ParticipantItem({ p }: { p: ParticipantRow }) {
   const name = p.name || (p.number ? `+${p.number}` : p.jid.split("@")[0] ?? "");
   return (
     <div class="item" style={{ minHeight: "48px" }}>
-      <Avatar name={p.name} size="sm" icon="user" />
+      <Avatar name={p.name} url={p.picture_url} size="sm" icon="user" />
       <span class="grow truncate">{name}</span>
       {p.is_super_admin ? <Badge tone="accent" icon="shield">Dono</Badge> : p.is_admin ? <Badge tone="info" icon="shield">Admin</Badge> : null}
     </div>

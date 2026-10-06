@@ -53,6 +53,7 @@ type chatView struct {
 	Preview      string `json:"preview,omitempty"`
 	MediaType    string `json:"media_type,omitempty"`
 	FromMe       bool   `json:"from_me,omitempty"`
+	PictureURL   string `json:"picture_url,omitempty"`
 }
 
 type chatsView struct {
@@ -141,9 +142,15 @@ func newMessagesView(chat chatRef, msgs []appstore.Message, names map[string]str
 
 /* --------------------------------------------------------------- contacts */
 
+// contactRow is a stored contact plus its picture (when known).
+type contactRow struct {
+	wa.Contact
+	PictureURL string `json:"picture_url,omitempty"`
+}
+
 type contactsView struct {
 	Kind     string       `json:"kind"`
-	Contacts []wa.Contact `json:"contacts"`
+	Contacts []contactRow `json:"contacts"`
 	Total    int          `json:"total"`
 	Shown    int          `json:"shown"`
 	Query    string       `json:"query,omitempty"`
@@ -170,6 +177,7 @@ type groupView struct {
 	IsCommunity      bool   `json:"is_community,omitempty"`
 	Created          string `json:"created,omitempty"`
 	AmAdmin          bool   `json:"am_admin,omitempty"`
+	PictureURL       string `json:"picture_url,omitempty"`
 }
 
 type groupsView struct {
@@ -186,6 +194,7 @@ type participantView struct {
 	Number       string `json:"number,omitempty"`
 	IsAdmin      bool   `json:"is_admin,omitempty"`
 	IsSuperAdmin bool   `json:"is_super_admin,omitempty"`
+	PictureURL   string `json:"picture_url,omitempty"`
 }
 
 type groupDetailView struct {
@@ -461,4 +470,61 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return strings.TrimSpace(string(r[:n])) + "…"
+}
+
+/* --------------------------------------------------------------- pictures */
+
+// pictureWait is how long a listing waits for profile pictures it hasn't cached
+// yet; the rest show up on the next listing.
+const pictureWait = 1500 * time.Millisecond
+
+func withChatPictures(ctx context.Context, mgr *wa.Manager, v chatsView) chatsView {
+	jids := make([]string, 0, len(v.Chats))
+	for _, c := range v.Chats {
+		if c.Kind == "dm" || c.Kind == "group" {
+			jids = append(jids, c.JID)
+		}
+	}
+	pics := mgr.ProfilePictures(ctx, acct(ctx), jids, pictureWait)
+	for i := range v.Chats {
+		v.Chats[i].PictureURL = pics[v.Chats[i].JID]
+	}
+	return v
+}
+
+func withContactPictures(ctx context.Context, mgr *wa.Manager, list []wa.Contact) []contactRow {
+	jids := make([]string, 0, len(list))
+	for _, c := range list {
+		jids = append(jids, c.JID)
+	}
+	pics := mgr.ProfilePictures(ctx, acct(ctx), jids, pictureWait)
+	out := make([]contactRow, len(list))
+	for i, c := range list {
+		out[i] = contactRow{Contact: c, PictureURL: pics[c.JID]}
+	}
+	return out
+}
+
+func withGroupPictures(ctx context.Context, mgr *wa.Manager, gs []groupView) []groupView {
+	jids := make([]string, 0, len(gs))
+	for _, g := range gs {
+		jids = append(jids, g.JID)
+	}
+	pics := mgr.ProfilePictures(ctx, acct(ctx), jids, pictureWait)
+	for i := range gs {
+		gs[i].PictureURL = pics[gs[i].JID]
+	}
+	return gs
+}
+
+func withParticipantPictures(ctx context.Context, mgr *wa.Manager, ps []participantView) []participantView {
+	jids := make([]string, 0, len(ps))
+	for _, p := range ps {
+		jids = append(jids, p.JID)
+	}
+	pics := mgr.ProfilePictures(ctx, acct(ctx), jids, pictureWait)
+	for i := range ps {
+		ps[i].PictureURL = pics[ps[i].JID]
+	}
+	return ps
 }
