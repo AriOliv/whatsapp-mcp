@@ -33,17 +33,18 @@ type WebhookConfig struct {
 
 // InboundEvent is the JSON body sent to the receiver.
 type InboundEvent struct {
-	Account   string `json:"account"`              // receiving account (phone digits)
-	ID        string `json:"id"`                   // message id
-	From      string `json:"from"`                 // sender phone (digits, E.164 without +); "" if unresolved
-	FromJID   string `json:"from_jid"`             // raw sender JID (may be @lid)
-	PushName  string `json:"push_name,omitempty"`  // sender's profile name
-	TS        int64  `json:"ts"`                   // unix millis
-	Type      string `json:"type"`                 // text | image | audio | video | document | sticker | button_reply | list_reply
-	Text      string `json:"text,omitempty"`       // text or caption (for a reply, the label tapped)
-	ReplyID   string `json:"reply_id,omitempty"`   // button_reply/list_reply: id of the button/row tapped
-	MediaType string `json:"media_type,omitempty"` // as stored (download via GET /api/media/{id})
-	QuotedID  string `json:"quoted_id,omitempty"`
+	Account   string            `json:"account"`              // receiving account (phone digits)
+	ID        string            `json:"id"`                   // message id
+	From      string            `json:"from"`                 // sender phone (digits, E.164 without +); "" if unresolved
+	FromJID   string            `json:"from_jid"`             // raw sender JID (may be @lid)
+	PushName  string            `json:"push_name,omitempty"`  // sender's profile name
+	TS        int64             `json:"ts"`                   // unix millis
+	Type      string            `json:"type"`                 // text | image | audio | video | document | sticker | button_reply | list_reply | form_submit
+	Text      string            `json:"text,omitempty"`       // text or caption (for a reply, the label tapped)
+	ReplyID   string            `json:"reply_id,omitempty"`   // button_reply/list_reply: id of the button/row tapped; form_submit: form id
+	Form      map[string]string `json:"form,omitempty"`       // form_submit: answers (field id → value)
+	MediaType string            `json:"media_type,omitempty"` // as stored (download via GET /api/media/{id})
+	QuotedID  string            `json:"quoted_id,omitempty"`
 }
 
 const (

@@ -22,6 +22,8 @@ type Sender interface {
 	SendMedia(ctx context.Context, account, to, kind, data, caption, mimeType, fileName string) (string, error)
 	SendButtons(ctx context.Context, account, to string, spec wa.ButtonsSpec, flavor string, fallback bool) (wa.SendResult, error)
 	SendList(ctx context.Context, account, to string, spec wa.ListSpec, fallback bool) (wa.SendResult, error)
+	SendForm(ctx context.Context, account, to string, spec wa.FormSpec) (wa.FormSent, error)
+	GetForm(ctx context.Context, account, id string) (*wa.FormView, error)
 	ChatPresence(ctx context.Context, account, to, state string) error
 	MarkRead(ctx context.Context, account, chat, sender string, ids []string) error
 	DownloadMedia(ctx context.Context, account, msgID string) ([]byte, string, string, error)
@@ -48,6 +50,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/send", a.guard(a.send))
 	mux.HandleFunc("POST /api/send/buttons", a.guard(a.sendButtons))
 	mux.HandleFunc("POST /api/send/list", a.guard(a.sendList))
+	mux.HandleFunc("POST /api/send/form", a.guard(a.sendForm))
+	mux.HandleFunc("GET /api/forms/{account}/{id}", a.guard(a.getForm))
 	mux.HandleFunc("POST /api/presence", a.guard(a.presence))
 	mux.HandleFunc("POST /api/read", a.guard(a.read))
 	mux.HandleFunc("GET /api/media/{account}/{id}", a.guard(a.media))
@@ -169,6 +173,51 @@ func (a *API) sendList(w http.ResponseWriter, r *http.Request) {
 	spec := wa.ListSpec{Text: req.Text, Title: req.Title, Footer: req.Footer, ButtonText: req.ButtonText, Sections: req.Sections}
 	res, err := a.s.SendList(ctx, req.Account, req.To, spec, req.FallbackText)
 	a.writeSendResult(w, res, err)
+}
+
+type sendFormReq struct {
+	Account string `json:"account"`
+	To      string `json:"to"`
+	wa.FormSpec
+}
+
+func (a *API) sendForm(w http.ResponseWriter, r *http.Request) {
+	var req sendFormReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowed(w, req.Account) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	res, err := a.s.SendForm(ctx, req.Account, req.To, req.FormSpec)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, wa.ErrInvalidSpec) {
+			code = http.StatusBadRequest
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, res)
+}
+
+func (a *API) getForm(w http.ResponseWriter, r *http.Request) {
+	account := r.PathValue("account")
+	if !a.allowed(w, account) {
+		return
+	}
+	v, err := a.s.GetForm(r.Context(), account, r.PathValue("id"))
+	switch {
+	case errors.Is(err, wa.ErrFormNotFound):
+		writeErr(w, http.StatusNotFound, "form not found")
+	case err != nil:
+		writeErr(w, http.StatusBadGateway, err.Error())
+	default:
+		writeJSON(w, v)
+	}
 }
 
 // writeSendResult maps an interactive send to HTTP: spec validation errors are

@@ -17,7 +17,23 @@ type fake struct {
 	sent    []string
 	buttons []wa.ButtonsSpec
 	lists   []wa.ListSpec
+	forms   []wa.FormSpec
 	refuse  bool // simulate WhatsApp refusing the interactive send
+}
+
+func (f *fake) SendForm(_ context.Context, account, to string, spec wa.FormSpec) (wa.FormSent, error) {
+	if spec.Title == "" {
+		return wa.FormSent{}, fmt.Errorf("%w: title is required", wa.ErrInvalidSpec)
+	}
+	f.forms = append(f.forms, spec)
+	return wa.FormSent{ID: "frm_1", Link: "https://x/f/tok", SendResult: wa.SendResult{ID: "FM1"}}, nil
+}
+
+func (f *fake) GetForm(_ context.Context, account, id string) (*wa.FormView, error) {
+	if id != "frm_1" {
+		return nil, wa.ErrFormNotFound
+	}
+	return &wa.FormView{ID: id, Status: "submitted", Answers: map[string]string{"nome": "Ari"}}, nil
 }
 
 func (f *fake) SendButtons(_ context.Context, account, to string, spec wa.ButtonsSpec, flavor string, fallback bool) (wa.SendResult, error) {
@@ -148,5 +164,43 @@ func TestSendButtonsAndList(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &res)
 	if w.Code != 200 || !res.Fallback || res.ID != "FB1" || res.FallbackReason != "405" {
 		t.Fatalf("refused with fallback: %d %+v", w.Code, res)
+	}
+}
+
+func TestSendAndGetForm(t *testing.T) {
+	f := &fake{}
+	mux := http.NewServeMux()
+	New(f, tok, map[string]bool{"5521": true}).Register(mux)
+	auth := "Bearer " + tok
+
+	body := `{"account":"5521","to":"5511","title":"Cadastro","fields":[{"id":"nome","label":"Nome","required":true}]}`
+	w := do(t, mux, "POST", "/api/send/form", auth, body)
+	if w.Code != 200 {
+		t.Fatalf("send form: %d %s", w.Code, w.Body)
+	}
+	var sent map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &sent)
+	if sent["form_id"] != "frm_1" || sent["id"] != "FM1" || sent["link"] == nil {
+		t.Fatalf("send form response = %v", sent)
+	}
+	if len(f.forms) != 1 || f.forms[0].Fields[0].ID != "nome" {
+		t.Fatalf("spec not passed through: %+v", f.forms)
+	}
+	if w := do(t, mux, "POST", "/api/send/form", auth, `{"account":"5521","to":"5511","fields":[]}`); w.Code != 400 {
+		t.Fatalf("invalid spec = %d", w.Code)
+	}
+	if w := do(t, mux, "POST", "/api/send/form", auth, `{"account":"9999","to":"5511","title":"x"}`); w.Code != 403 {
+		t.Fatalf("other account = %d", w.Code)
+	}
+
+	w = do(t, mux, "GET", "/api/forms/5521/frm_1", auth, "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"nome":"Ari"`) {
+		t.Fatalf("get form: %d %s", w.Code, w.Body)
+	}
+	if w := do(t, mux, "GET", "/api/forms/5521/frm_x", auth, ""); w.Code != 404 {
+		t.Fatalf("unknown form = %d", w.Code)
+	}
+	if w := do(t, mux, "GET", "/api/forms/9999/frm_1", auth, ""); w.Code != 403 {
+		t.Fatalf("foreign account = %d", w.Code)
 	}
 }
