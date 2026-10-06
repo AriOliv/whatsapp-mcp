@@ -271,7 +271,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 		"Button types: quick_reply (up to 3; the tap comes back as a reply with its id), url (opens an https link), " +
 		"call (dials a number), copy (copies a code, e.g. a PIX key). Up to 10 buttons. " +
 		"Unofficial-client feature: if WhatsApp refuses it, set fallbackText=true to send the same content as plain text. " +
-		"If buttons are accepted but don't render, retry with flavor=full."}),
+		"If buttons are accepted but don't render, retry with flavor=full. flavor=bot marks the message as a business bot (WhatsApp shows an \"AI\" label)."}),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in sendButtonsArgs) (*mcp.CallToolResult, any, error) {
 			spec := wa.ButtonsSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, Buttons: in.Buttons}
 			res, err := mgr.SendButtons(ctx, acct(ctx), in.Number, spec, in.Flavor, in.FallbackText)
@@ -556,7 +556,7 @@ type sendButtonsArgs struct {
 	Title        string      `json:"title,omitempty" jsonschema:"Optional bold header"`
 	Footer       string      `json:"footer,omitempty" jsonschema:"Optional small footer text"`
 	Buttons      []wa.Button `json:"buttons" jsonschema:"1-10 buttons; type is quick_reply|url|call|copy; quick_reply takes id, url takes url, call takes phone, copy takes code"`
-	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default) or full; try full if buttons don't render"`
+	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default), full (try if buttons don't render) or bot (adds an AI label)"`
 	FallbackText bool        `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the buttons, send the same content as plain text"`
 }
 
@@ -589,7 +589,7 @@ type sendFlowArgs struct {
 	FlowJSON     string         `json:"flowJson,omitempty" jsonschema:"Raw flow definition to embed (unverified)"`
 	Extra        map[string]any `json:"extra,omitempty" jsonschema:"Extra button params merged as-is (e.g. flow_metadata)"`
 	DummyReply   bool           `json:"dummyReply,omitempty" jsonschema:"Put a quick_reply button before the flow button"`
-	Flavor       string         `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default) or full"`
+	Flavor       string         `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default), full or bot (adds an AI label)"`
 	FallbackText bool           `json:"fallbackText,omitempty" jsonschema:"If refused, send the body as plain text"`
 }
 

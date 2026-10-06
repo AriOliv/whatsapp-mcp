@@ -41,8 +41,9 @@ const (
 // Stanza-node shapes for buttons. Both are what working clients send in 2026;
 // which one a given account/recipient accepts has shifted over time.
 const (
-	FlavorMixed = "mixed" // <biz><interactive><native_flow name="mixed"/></interactive></biz> (+ <bot> in 1:1)
+	FlavorMixed = "mixed" // <biz><interactive><native_flow name="mixed"/></interactive></biz>
 	FlavorFull  = "full"  // same, with the actor/storage/privacy attrs and a quality_control node
+	FlavorBot   = "bot"   // mixed plus <bot biz_bot="1"/> in 1:1 chats: WhatsApp then labels the message "AI ✨"
 )
 
 const (
@@ -231,7 +232,9 @@ func buildListMessage(spec ListSpec) (*waE2E.Message, error) {
 }
 
 // buttonsNodes returns the extra stanza nodes a NativeFlow buttons message
-// needs. The <bot biz_bot="1"/> node goes only to 1:1 chats.
+// needs. Buttons render without the <bot biz_bot="1"/> node (verified on iPhone,
+// 2026-10), and with it WhatsApp tags the message "AI ✨", so it is opt-in
+// (FlavorBot, 1:1 chats only).
 func buttonsNodes(to types.JID, flavor string, now time.Time) []waBinary.Node {
 	interactive := waBinary.Node{
 		Tag:   "interactive",
@@ -257,7 +260,7 @@ func buttonsNodes(to types.JID, flavor string, now time.Time) []waBinary.Node {
 	}
 	biz.Content = children
 	nodes := []waBinary.Node{biz}
-	if isOneToOne(to) {
+	if flavor == FlavorBot && isOneToOne(to) {
 		nodes = append(nodes, waBinary.Node{Tag: "bot", Attrs: waBinary.Attrs{"biz_bot": "1"}})
 	}
 	return nodes

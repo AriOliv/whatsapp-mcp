@@ -1042,10 +1042,11 @@
             "type": "string",
             "enum": [
               "mixed",
-              "full"
+              "full",
+              "bot"
             ],
             "default": "mixed",
-            "description": "Formato do stanza; tente full se não renderizar"
+            "description": "Formato do stanza: mixed (padrão); full se os botões não renderizarem; bot marca como bot de negócio e o WhatsApp mostra o selo \"AI ✨\""
           },
           "fallbackText": {
             "type": "boolean",
