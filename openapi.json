@@ -1046,7 +1046,7 @@
               "bot"
             ],
             "default": "mixed",
-            "description": "Formato do stanza: mixed (padrão); full se os botões não renderizarem; bot marca como bot de negócio e o WhatsApp mostra o selo \"AI ✨\""
+            "description": "Formato do stanza: mixed (padrão, recomendado); full se os botões não renderizarem (o WhatsApp mostra um ícone (i) \"This business used a secure service from Meta\"); bot marca como bot de negócio e mostra o selo \"AI ✨\""
           },
           "fallbackText": {
             "type": "boolean",

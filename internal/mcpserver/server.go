@@ -271,7 +271,7 @@ func Build(mgr *wa.Manager) *mcp.Server {
 		"Button types: quick_reply (up to 3; the tap comes back as a reply with its id), url (opens an https link), " +
 		"call (dials a number), copy (copies a code, e.g. a PIX key). Up to 10 buttons. " +
 		"Unofficial-client feature: if WhatsApp refuses it, set fallbackText=true to send the same content as plain text. " +
-		"If buttons are accepted but don't render, retry with flavor=full. flavor=bot marks the message as a business bot (WhatsApp shows an \"AI\" label)."}),
+		"If buttons are accepted but don't render, retry with flavor=full (adds an (i) \"secure service from Meta\" note). flavor=bot marks the message as a business bot (WhatsApp shows an \"AI\" label)."}),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in sendButtonsArgs) (*mcp.CallToolResult, any, error) {
 			spec := wa.ButtonsSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, Buttons: in.Buttons}
 			res, err := mgr.SendButtons(ctx, acct(ctx), in.Number, spec, in.Flavor, in.FallbackText)
@@ -556,7 +556,7 @@ type sendButtonsArgs struct {
 	Title        string      `json:"title,omitempty" jsonschema:"Optional bold header"`
 	Footer       string      `json:"footer,omitempty" jsonschema:"Optional small footer text"`
 	Buttons      []wa.Button `json:"buttons" jsonschema:"1-10 buttons; type is quick_reply|url|call|copy; quick_reply takes id, url takes url, call takes phone, copy takes code"`
-	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default), full (try if buttons don't render) or bot (adds an AI label)"`
+	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default), full (try if buttons don't render; adds a Meta (i) note) or bot (adds an AI label)"`
 	FallbackText bool        `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the buttons, send the same content as plain text"`
 }
 
