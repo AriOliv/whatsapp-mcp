@@ -39,10 +39,10 @@ type InboundEvent struct {
 	FromJID   string            `json:"from_jid"`             // raw sender JID (may be @lid)
 	PushName  string            `json:"push_name,omitempty"`  // sender's profile name
 	TS        int64             `json:"ts"`                   // unix millis
-	Type      string            `json:"type"`                 // text | image | audio | video | document | sticker | button_reply | list_reply | form_submit
+	Type      string            `json:"type"`                 // text | image | audio | video | document | sticker | button_reply | list_reply | flow_reply | form_submit
 	Text      string            `json:"text,omitempty"`       // text or caption (for a reply, the label tapped)
-	ReplyID   string            `json:"reply_id,omitempty"`   // button_reply/list_reply: id of the button/row tapped; form_submit: form id
-	Form      map[string]string `json:"form,omitempty"`       // form_submit: answers (field id → value)
+	ReplyID   string            `json:"reply_id,omitempty"`   // button_reply/list_reply: id tapped; flow_reply: flow token; form_submit: form id
+	Form      map[string]string `json:"form,omitempty"`       // flow_reply/form_submit: submitted fields
 	MediaType string            `json:"media_type,omitempty"` // as stored (download via GET /api/media/{id})
 	QuotedID  string            `json:"quoted_id,omitempty"`
 }
@@ -109,11 +109,12 @@ func (m *Manager) inboundFor(ctx context.Context, account string, v *events.Mess
 		typ = msg.MediaType
 	}
 	text, replyID := msg.Body, ""
+	var form map[string]string
 	if r := interactiveReply(v.Message); r != nil {
-		typ, text, replyID = r.Kind+"_reply", r.Text, r.ID
+		typ, text, replyID, form = r.Kind+"_reply", r.Text, r.ID, r.Form
 	}
 	ev := &InboundEvent{Account: account, ID: info.ID, From: from, FromJID: info.Sender.ToNonAD().String(),
-		PushName: info.PushName, TS: info.Timestamp.UnixMilli(), Type: typ, Text: text, ReplyID: replyID, MediaType: msg.MediaType}
+		PushName: info.PushName, TS: info.Timestamp.UnixMilli(), Type: typ, Text: text, ReplyID: replyID, Form: form, MediaType: msg.MediaType}
 	if ci := v.Message.GetExtendedTextMessage().GetContextInfo(); ci != nil {
 		ev.QuotedID = ci.GetStanzaID()
 	}

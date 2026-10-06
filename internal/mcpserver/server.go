@@ -301,6 +301,21 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			}
 			return done(v, nil)
 		})
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_flow", Description: "EXPERIMENTAL. Send a WhatsApp Flow " +
+		"(a native full-screen form) as a galaxy_message button. The recipient's app loads the screens from Meta by flowId, " +
+		"so it normally only opens for flows published on a WhatsApp Business API account; from this (personal) account it " +
+		"may not open at all. The filled form comes back as a reply with the flowToken and the fields. " +
+		"For a form that always works, use whatsapp_send_form."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendFlowArgs) (*mcp.CallToolResult, any, error) {
+			spec := wa.FlowSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, CTA: in.CTA, FlowID: in.FlowID,
+				FlowToken: in.FlowToken, Mode: in.Mode, Action: in.Action, Screen: in.Screen, Data: in.Data,
+				FlowJSON: in.FlowJSON, Extra: in.Extra, DummyReply: in.DummyReply}
+			res, err := mgr.SendFlow(ctx, acct(ctx), in.Number, spec, in.Flavor, in.FallbackText)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "flow", in.Text), nil)
+		})
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_list", Description: "Send a list message: one button that opens " +
 		"a menu of options grouped in sections (up to 10 sections, 10 rows each). The row picked comes back as a reply with its id. " +
 		"Unofficial-client feature: set fallbackText=true to send the options as a numbered plain-text list if WhatsApp refuses it."}),
@@ -557,6 +572,25 @@ type getFormArgs struct {
 type formSentView struct {
 	wa.FormSent
 	To string `json:"to"`
+}
+
+type sendFlowArgs struct {
+	Number       string         `json:"number" jsonschema:"WhatsApp number or JID"`
+	Text         string         `json:"text" jsonschema:"Message body"`
+	Title        string         `json:"title,omitempty" jsonschema:"Optional bold header"`
+	Footer       string         `json:"footer,omitempty" jsonschema:"Optional small footer text"`
+	CTA          string         `json:"cta,omitempty" jsonschema:"Button label (default Abrir)"`
+	FlowID       string         `json:"flowId,omitempty" jsonschema:"Published flow id"`
+	FlowToken    string         `json:"flowToken,omitempty" jsonschema:"Opaque token echoed back with the answers"`
+	Mode         string         `json:"mode,omitempty" jsonschema:"published (default) or draft"`
+	Action       string         `json:"action,omitempty" jsonschema:"navigate (default) or data_exchange"`
+	Screen       string         `json:"screen,omitempty" jsonschema:"First screen id (navigate)"`
+	Data         map[string]any `json:"data,omitempty" jsonschema:"Initial screen data (navigate)"`
+	FlowJSON     string         `json:"flowJson,omitempty" jsonschema:"Raw flow definition to embed (unverified)"`
+	Extra        map[string]any `json:"extra,omitempty" jsonschema:"Extra button params merged as-is (e.g. flow_metadata)"`
+	DummyReply   bool           `json:"dummyReply,omitempty" jsonschema:"Put a quick_reply button before the flow button"`
+	Flavor       string         `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default) or full"`
+	FallbackText bool           `json:"fallbackText,omitempty" jsonschema:"If refused, send the body as plain text"`
 }
 
 type sendListArgs struct {

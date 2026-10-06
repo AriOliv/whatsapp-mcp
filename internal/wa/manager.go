@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -381,6 +382,40 @@ func (m *Manager) SendButtons(ctx context.Context, account, to string, spec Butt
 	resp, ferr := cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(buttonsFallbackText(spec))})
 	if ferr != nil {
 		return SendResult{}, fmt.Errorf("interactive send refused (%v) and fallback failed: %w", err, ferr)
+	}
+	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
+}
+
+// SendFlow sends a WhatsApp Flow ("galaxy_message") message. EXPERIMENTAL: from
+// a personal account the recipient may not be able to open it. Same stanza
+// nodes and fallback as SendButtons.
+func (m *Manager) SendFlow(ctx context.Context, account, to string, spec FlowSpec, flavor string, fallback bool) (SendResult, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return SendResult{}, err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return SendResult{}, err
+	}
+	msg, err := buildFlowMessage(spec)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if flavor == "" {
+		flavor = FlavorMixed
+	}
+	nodes := buttonsNodes(jid, flavor, time.Now())
+	resp, err := cli.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{AdditionalNodes: &nodes})
+	if err == nil {
+		return SendResult{ID: resp.ID}, nil
+	}
+	if !fallback {
+		return SendResult{}, fmt.Errorf("flow send refused: %w", err)
+	}
+	resp, ferr := cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(strings.TrimSpace(spec.Text))})
+	if ferr != nil {
+		return SendResult{}, fmt.Errorf("flow send refused (%v) and fallback failed: %w", err, ferr)
 	}
 	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
 }
@@ -1348,6 +1383,18 @@ func messageText(m *waE2E.Message) string {
 // replyText is how a button/list tap is stored as a message body. The id is kept
 // so readers of find_messages can tell which option was picked.
 func replyText(r *Reply) string {
+	if r.Kind == "flow" {
+		keys := make([]string, 0, len(r.Form))
+		for k := range r.Form {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+": "+r.Form[k])
+		}
+		return fmt.Sprintf("[flow:%s] %s", r.ID, strings.Join(parts, "; "))
+	}
 	switch {
 	case r.Text != "" && r.ID != "" && r.ID != r.Text:
 		return fmt.Sprintf("%s [%s:%s]", r.Text, r.Kind, r.ID)
