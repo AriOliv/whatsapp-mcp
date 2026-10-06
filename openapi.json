@@ -1,0 +1,1458 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WhatsApp MCP — Gateway REST API",
+    "version": "1.0.0",
+    "description": "API REST para um backend confiável usar um número pareado como porta de entrada de WhatsApp (envio de texto, mídia, botões, listas e formulários; status; download de mídia).\n\n**Autenticação:** `Authorization: Bearer <GATEWAY_API_TOKEN>` (token estático, ≥24 caracteres). Só as contas listadas em `GATEWAY_ACCOUNTS` podem ser usadas; as demais retornam 403.\n\n**Mensagens recebidas** não vêm por esta API: são entregues por webhook (`INBOUND_WEBHOOK_URL`) assinado com HMAC — veja o schema `InboundEvent` e a seção de webhooks.\n\nErros sempre vêm como `{\"error\": \"...\"}`. Envio interativo recusado pelo WhatsApp → 502 (ou, com `fallbackText: true`, envio como texto com `fallback: true`).",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://whatsapp.avenia.tech",
+      "description": "Produção"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local (MCP_MODE=http)"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Envio",
+      "description": "Texto, mídia, botões e listas"
+    },
+    {
+      "name": "Formulários",
+      "description": "Formulários preenchidos fora do chat"
+    },
+    {
+      "name": "Conversa",
+      "description": "Presença e confirmação de leitura"
+    },
+    {
+      "name": "Mídia e status",
+      "description": "Download de mídia e estado da conta"
+    },
+    {
+      "name": "Público",
+      "description": "Rotas sem autenticação (health e páginas de formulário)"
+    }
+  ],
+  "paths": {
+    "/api/send": {
+      "post": {
+        "tags": [
+          "Envio"
+        ],
+        "summary": "Enviar texto ou mídia",
+        "operationId": "sendMessage",
+        "description": "Com `data` envia mídia (base64 ou URL http(s)) do tipo `kind`, usando `text` como legenda; sem `data` envia `text` como mensagem de texto.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "text": "Olá! 👋"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SentId"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/send/buttons": {
+      "post": {
+        "tags": [
+          "Envio"
+        ],
+        "summary": "Enviar mensagem com botões",
+        "operationId": "sendButtons",
+        "description": "Botões NativeFlow (conta não-oficial): `quick_reply` (até 3; o toque volta pelo webhook como `button_reply` com o `id`), `url`, `call`, `copy`. Até 10 botões.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendButtonsRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "title": "Pedido #123",
+                "text": "Confirma o pedido?",
+                "footer": "Avenia",
+                "buttons": [
+                  {
+                    "type": "quick_reply",
+                    "text": "Confirmar",
+                    "id": "confirm"
+                  },
+                  {
+                    "type": "quick_reply",
+                    "text": "Cancelar",
+                    "id": "cancel"
+                  },
+                  {
+                    "type": "url",
+                    "text": "Ver detalhes",
+                    "url": "https://avenia.io"
+                  }
+                ],
+                "fallbackText": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/send/list": {
+      "post": {
+        "tags": [
+          "Envio"
+        ],
+        "summary": "Enviar lista de opções",
+        "operationId": "sendList",
+        "description": "Um botão que abre um menu de opções em seções (até 10 seções × 10 linhas). A escolha volta pelo webhook como `list_reply` com o `id` da linha.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendListRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "text": "Escolha o tipo de conta",
+                "buttonText": "Ver opções",
+                "sections": [
+                  {
+                    "title": "Contas",
+                    "rows": [
+                      {
+                        "id": "pf",
+                        "title": "Pessoa física",
+                        "description": "CPF"
+                      },
+                      {
+                        "id": "pj",
+                        "title": "Empresa",
+                        "description": "CNPJ"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/send/form": {
+      "post": {
+        "tags": [
+          "Formulários"
+        ],
+        "summary": "Enviar formulário (preenchido fora do chat)",
+        "operationId": "sendForm",
+        "description": "Cria um formulário e envia um botão que abre `/f/{token}`. As respostas nunca aparecem no chat (a pessoa recebe só um recibo); chegam pelo webhook (`form_submit`) e por `GET /api/forms/{account}/{id}`. Link de uso único; expira em 24h por padrão (máx. 30 dias).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendFormRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "title": "Cadastro",
+                "description": "Leva 1 minuto.",
+                "text": "Toque no botão para preencher seu cadastro.",
+                "button": "Preencher",
+                "fields": [
+                  {
+                    "id": "nome",
+                    "label": "Nome completo",
+                    "required": true
+                  },
+                  {
+                    "id": "cpf",
+                    "label": "CPF",
+                    "type": "cpf",
+                    "required": true
+                  },
+                  {
+                    "id": "email",
+                    "label": "E-mail",
+                    "type": "email"
+                  },
+                  {
+                    "id": "plano",
+                    "label": "Plano",
+                    "type": "select",
+                    "options": [
+                      "Básico",
+                      "Pro"
+                    ],
+                    "required": true
+                  }
+                ],
+                "expiresInMinutes": 1440
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormSent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/forms/{account}/{id}": {
+      "get": {
+        "tags": [
+          "Formulários"
+        ],
+        "summary": "Consultar formulário e respostas",
+        "operationId": "getForm",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+              "example": "5511915044043"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "frm_aW6W_sId6ngz"
+            },
+            "description": "`form_id` retornado no envio."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/presence": {
+      "post": {
+        "tags": [
+          "Conversa"
+        ],
+        "summary": "Indicador de digitando/gravando",
+        "operationId": "chatPresence",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresenceRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "state": "composing"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/read": {
+      "post": {
+        "tags": [
+          "Conversa"
+        ],
+        "summary": "Marcar mensagens como lidas",
+        "operationId": "markRead",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "chat": "5521967582535",
+                "ids": [
+                  "3EB0BEC5D8F5711BA7090C"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
+    },
+    "/api/media/{account}/{id}": {
+      "get": {
+        "tags": [
+          "Mídia e status"
+        ],
+        "summary": "Baixar mídia de uma mensagem",
+        "operationId": "downloadMedia",
+        "description": "Baixa a mídia (imagem, áudio, vídeo, documento, figurinha) de uma mensagem recebida/enviada, pelo `id` (ex.: o `id` do `InboundEvent`). O nome sugerido vem em `X-File-Name`.",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+              "example": "5511915044043"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ID da mensagem."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bytes da mídia",
+            "headers": {
+              "X-File-Name": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Nome de arquivo sugerido"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/status/{account}": {
+      "get": {
+        "tags": [
+          "Mídia e status"
+        ],
+        "summary": "A conta está conectada?",
+        "operationId": "accountStatus",
+        "parameters": [
+          {
+            "name": "account",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+              "example": "5511915044043"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Público"
+        ],
+        "summary": "Health check",
+        "operationId": "healthz",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "accounts": {
+                      "type": "integer",
+                      "description": "Contas conectadas no boot"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Indisponível"
+          }
+        }
+      }
+    },
+    "/f/{token}": {
+      "get": {
+        "tags": [
+          "Público"
+        ],
+        "summary": "Página do formulário (navegador)",
+        "operationId": "formPage",
+        "security": [],
+        "description": "Página HTML aberta pelo botão do formulário. O token do link é a credencial (uso único, expira). Não é para consumo por API.",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Formulário",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Link inválido (HTML)"
+          },
+          "410": {
+            "description": "Já enviado ou expirado (HTML)"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Público"
+        ],
+        "summary": "Envio da página do formulário (navegador)",
+        "operationId": "formSubmit",
+        "security": [],
+        "description": "Submissão `application/x-www-form-urlencoded` feita pela própria página (exige o `_csrf` embutido nela).",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "properties": {
+                  "_csrf": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Respostas gravadas (HTML)"
+          },
+          "403": {
+            "description": "CSRF inválido"
+          },
+          "404": {
+            "description": "Link inválido"
+          },
+          "410": {
+            "description": "Já enviado ou expirado"
+          },
+          "422": {
+            "description": "Respostas inválidas (HTML com os erros por campo)"
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "inboundMessage": {
+      "post": {
+        "summary": "Mensagem recebida / toque em botão / formulário enviado",
+        "operationId": "inboundWebhook",
+        "description": "Enviado para `INBOUND_WEBHOOK_URL` para cada mensagem 1:1 recebida pelas contas de `INBOUND_WEBHOOK_ACCOUNTS`, toque em botão/lista e formulário enviado. Entrega pelo menos uma vez, em ordem, com retry exponencial (até 72h); responda 2xx. Valide a assinatura: `X-Signature = \"sha256=\" + hex(HMAC_SHA256(INBOUND_WEBHOOK_SECRET, X-Timestamp + \".\" + corpo))` e rejeite timestamps com mais de 5 min. Deduplique por `id`.",
+        "parameters": [
+          {
+            "name": "X-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unix seconds"
+          },
+          {
+            "name": "X-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "sha256=9f86d0..."
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundEvent"
+              },
+              "examples": {
+                "texto": {
+                  "value": {
+                    "account": "5511915044043",
+                    "id": "3EB0A1",
+                    "from": "5521967582535",
+                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "push_name": "Ari",
+                    "ts": 1791245694473,
+                    "type": "text",
+                    "text": "oi"
+                  }
+                },
+                "botao": {
+                  "value": {
+                    "account": "5511915044043",
+                    "id": "3EB0A2",
+                    "from": "5521967582535",
+                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "ts": 1791245694473,
+                    "type": "button_reply",
+                    "text": "Confirmar",
+                    "reply_id": "confirm"
+                  }
+                },
+                "formulario": {
+                  "value": {
+                    "account": "5511915044043",
+                    "id": "frm_aW6W_sId6ngz",
+                    "from": "5521967582535",
+                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "ts": 1791245797181,
+                    "type": "form_submit",
+                    "text": "Cadastro",
+                    "reply_id": "frm_aW6W_sId6ngz",
+                    "form": {
+                      "nome": "Fulano",
+                      "cpf": "52998224725",
+                      "plano": "Pro"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recebido (qualquer 2xx confirma; outro status → retry)"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "GATEWAY_API_TOKEN"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Requisição inválida (JSON malformado ou especificação inválida)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Token ausente ou incorreto",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "unauthorized"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Conta fora de GATEWAY_ACCOUNTS",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": "account not enabled for the gateway API"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Não encontrado",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "BadGateway": {
+        "description": "WhatsApp recusou o envio ou a conta não está conectada",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "Ok": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "SentId": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID da mensagem enviada",
+            "example": "3EB0BEC5D8F5711BA7090C"
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SendResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "3EB0BEC5D8F5711BA7090C"
+          },
+          "fallback": {
+            "type": "boolean",
+            "description": "true se foi enviado como texto simples porque o WhatsApp recusou o interativo"
+          },
+          "fallback_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "SendRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
+            "example": "5521967582535"
+          },
+          "text": {
+            "type": "string",
+            "description": "Texto (ou legenda, com data)"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video",
+              "document",
+              "audio"
+            ],
+            "description": "Tipo da mídia (com data)"
+          },
+          "data": {
+            "type": "string",
+            "description": "Mídia em base64 ou URL http(s)"
+          },
+          "mimetype": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
+      },
+      "Button": {
+        "type": "object",
+        "required": [
+          "type",
+          "text"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "quick_reply",
+              "url",
+              "call",
+              "copy"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "Rótulo do botão"
+          },
+          "id": {
+            "type": "string",
+            "description": "quick_reply: id devolvido no toque (padrão = rótulo)"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "url: link https"
+          },
+          "phone": {
+            "type": "string",
+            "description": "call: número a discar"
+          },
+          "code": {
+            "type": "string",
+            "description": "copy: texto copiado (ex.: chave PIX)"
+          }
+        }
+      },
+      "SendButtonsRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to",
+          "text",
+          "buttons"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
+            "example": "5521967582535"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "Cabeçalho em negrito (opcional)"
+          },
+          "footer": {
+            "type": "string"
+          },
+          "buttons": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/Button"
+            }
+          },
+          "flavor": {
+            "type": "string",
+            "enum": [
+              "mixed",
+              "full"
+            ],
+            "default": "mixed",
+            "description": "Formato do stanza; tente full se não renderizar"
+          },
+          "fallbackText": {
+            "type": "boolean",
+            "default": false,
+            "description": "Se recusado, envia o mesmo conteúdo como texto"
+          }
+        }
+      },
+      "ListRow": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Padrão = título"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "ListSection": {
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/ListRow"
+            }
+          }
+        }
+      },
+      "SendListRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to",
+          "text",
+          "buttonText",
+          "sections"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
+            "example": "5521967582535"
+          },
+          "text": {
+            "type": "string"
+          },
+          "buttonText": {
+            "type": "string",
+            "description": "Rótulo do botão que abre a lista"
+          },
+          "title": {
+            "type": "string"
+          },
+          "footer": {
+            "type": "string"
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/ListSection"
+            }
+          },
+          "fallbackText": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "FormField": {
+        "type": "object",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$",
+            "description": "Chave da resposta"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "textarea",
+              "email",
+              "phone",
+              "number",
+              "date",
+              "cpf",
+              "cnpj",
+              "select",
+              "radio",
+              "checkbox"
+            ],
+            "default": "text",
+            "description": "date = YYYY-MM-DD; cpf/cnpj validam dígito verificador e voltam só com dígitos; checkbox com options = múltipla escolha (valores separados por \", \"), sem options = um sim/não (\"sim\")"
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Obrigatório em select/radio"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "help": {
+            "type": "string",
+            "description": "Texto de ajuda sob o campo"
+          }
+        }
+      },
+      "SendFormRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to",
+          "title",
+          "fields"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
+            "example": "5521967582535"
+          },
+          "title": {
+            "type": "string",
+            "description": "Título da página e cabeçalho da mensagem"
+          },
+          "description": {
+            "type": "string",
+            "description": "Texto na página, acima dos campos"
+          },
+          "text": {
+            "type": "string",
+            "description": "Corpo da mensagem (padrão: 'Toque no botão para preencher o formulário.')"
+          },
+          "button": {
+            "type": "string",
+            "default": "Preencher"
+          },
+          "submit": {
+            "type": "string",
+            "default": "Enviar",
+            "description": "Rótulo do botão de envio na página"
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "items": {
+              "$ref": "#/components/schemas/FormField"
+            }
+          },
+          "expiresInMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 43200,
+            "default": 1440
+          },
+          "receipt": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enviar o recibo '✅ Recebemos suas respostas' no chat"
+          }
+        }
+      },
+      "FormSent": {
+        "type": "object",
+        "properties": {
+          "form_id": {
+            "type": "string",
+            "example": "frm_aW6W_sId6ngz"
+          },
+          "link": {
+            "type": "string",
+            "format": "uri",
+            "description": "Link do formulário (o mesmo do botão). Credencial de uso único: não registre em logs."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "description": "ID da mensagem enviada"
+          },
+          "fallback": {
+            "type": "boolean"
+          },
+          "fallback_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "FormView": {
+        "type": "object",
+        "properties": {
+          "form_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "submitted",
+              "expired"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Respostas por id de campo (só quando submitted)"
+          }
+        }
+      },
+      "PresenceRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to",
+          "state"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
+            "example": "5521967582535"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "composing",
+              "recording",
+              "paused"
+            ]
+          }
+        }
+      },
+      "ReadRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "chat",
+          "ids"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
+            "example": "5511915044043"
+          },
+          "chat": {
+            "type": "string",
+            "description": "Número ou JID da conversa"
+          },
+          "sender": {
+            "type": "string",
+            "description": "JID do remetente (grupos)"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "InboundEvent": {
+        "type": "object",
+        "required": [
+          "account",
+          "id",
+          "from",
+          "from_jid",
+          "ts",
+          "type"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta que recebeu"
+          },
+          "id": {
+            "type": "string",
+            "description": "ID da mensagem (form_submit: id do formulário). Use para deduplicar."
+          },
+          "from": {
+            "type": "string",
+            "description": "Telefone do remetente (dígitos); vazio se não resolvido"
+          },
+          "from_jid": {
+            "type": "string",
+            "description": "JID bruto (pode ser @lid)"
+          },
+          "push_name": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix millis"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "audio",
+              "video",
+              "document",
+              "sticker",
+              "button_reply",
+              "list_reply",
+              "flow_reply",
+              "form_submit"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "description": "Texto/legenda; em respostas, o rótulo tocado; em form_submit, o título"
+          },
+          "reply_id": {
+            "type": "string",
+            "description": "button_reply/list_reply: id tocado; flow_reply: flow token; form_submit: id do formulário"
+          },
+          "form": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "form_submit/flow_reply: respostas"
+          },
+          "media_type": {
+            "type": "string",
+            "description": "Com mídia: baixe via GET /api/media/{account}/{id}"
+          },
+          "quoted_id": {
+            "type": "string",
+            "description": "ID da mensagem citada"
+          }
+        }
+      }
+    }
+  }
+}
