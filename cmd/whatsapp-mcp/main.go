@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/AriOliv/whatsapp-mcp/internal/config"
+	"github.com/AriOliv/whatsapp-mcp/internal/formweb"
 	"github.com/AriOliv/whatsapp-mcp/internal/httpapi"
 	"github.com/AriOliv/whatsapp-mcp/internal/mcpserver"
 	"github.com/AriOliv/whatsapp-mcp/internal/oauth"
@@ -101,6 +102,10 @@ func main() {
 		handlers := oauth.NewHandlers(oauthStore, mgr, cfg.PublicURL)
 		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 		handlers.Register(mux, mcpHandler) // mounts bearer-guarded /mcp + OAuth + login routes
+		if err := mgr.InitForms(ctx, cfg.PublicURL); err != nil {
+			fatal(err)
+		}
+		formweb.New(mgr, []byte(cfg.JWTSecret)).Register(mux) // GET/POST /f/{token}: web forms sent over WhatsApp
 		if api := httpapi.New(mgr, cfg.GatewayAPIToken, gwAccounts); api != nil {
 			api.Register(mux) // /api/* for the trusted gateway backend (static bearer, allowed accounts only)
 			fmt.Fprintf(os.Stderr, "gateway API on /api/* for %d account(s)\n", len(gwAccounts))

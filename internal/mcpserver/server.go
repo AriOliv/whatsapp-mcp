@@ -280,6 +280,27 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			}
 			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "buttons", in.Text), nil)
 		})
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_form", Description: "Send a form to fill outside the chat. " +
+		"The message carries a button that opens a web page with the fields; the answers never appear in the chat " +
+		"(the person gets a short receipt). Fields: text, textarea, email, phone, number, date (YYYY-MM-DD), cpf, cnpj " +
+		"(check digits validated), select/radio (with options), checkbox (with options = multiple choice, without = a " +
+		"single yes/no). The link is single use and expires (default 24h). Read the answers with whatsapp_get_form."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendFormArgs) (*mcp.CallToolResult, any, error) {
+			res, err := mgr.SendForm(ctx, acct(ctx), in.Number, in.FormSpec)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(formSentView{FormSent: res, To: in.Number}, nil)
+		})
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_get_form", Description: "Get a form sent with whatsapp_send_form: " +
+		"status (open, submitted, expired) and, once submitted, the answers by field id."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in getFormArgs) (*mcp.CallToolResult, any, error) {
+			v, err := mgr.GetForm(ctx, acct(ctx), in.FormID)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(v, nil)
+		})
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_list", Description: "Send a list message: one button that opens " +
 		"a menu of options grouped in sections (up to 10 sections, 10 rows each). The row picked comes back as a reply with its id. " +
 		"Unofficial-client feature: set fallbackText=true to send the options as a numbered plain-text list if WhatsApp refuses it."}),
@@ -522,6 +543,20 @@ type sendButtonsArgs struct {
 	Buttons      []wa.Button `json:"buttons" jsonschema:"1-10 buttons; type is quick_reply|url|call|copy; quick_reply takes id, url takes url, call takes phone, copy takes code"`
 	Flavor       string      `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default) or full; try full if buttons don't render"`
 	FallbackText bool        `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the buttons, send the same content as plain text"`
+}
+
+type sendFormArgs struct {
+	Number string `json:"number" jsonschema:"WhatsApp number or JID"`
+	wa.FormSpec
+}
+
+type getFormArgs struct {
+	FormID string `json:"formId" jsonschema:"form_id returned by whatsapp_send_form"`
+}
+
+type formSentView struct {
+	wa.FormSent
+	To string `json:"to"`
 }
 
 type sendListArgs struct {

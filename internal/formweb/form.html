@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{if .Spec.Title}}{{.Spec.Title}}{{else}}Formulário{{end}}</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--muted:#65676b;--line:#d9dbe0;--accent:#128c7e;--err:#c62828;--ok:#1e8e3e}
+@media (prefers-color-scheme:dark){:root{--bg:#111b21;--card:#1f2c33;--fg:#e9edef;--muted:#8696a0;--line:#2f3b43;--accent:#25d366;--err:#ef5350;--ok:#4caf50}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:20px 16px 40px}
+.card{background:var(--card);border-radius:14px;padding:22px 18px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h1{font-size:1.3rem;margin:0 0 6px}
+.desc{color:var(--muted);margin:0 0 18px;white-space:pre-line}
+.f{margin:0 0 18px}
+label.l{display:block;font-weight:600;margin:0 0 6px}
+.req{color:var(--err)}
+.help{color:var(--muted);font-size:.85rem;margin:4px 0 0}
+input[type=text],input[type=email],input[type=tel],input[type=number],input[type=date],select,textarea{width:100%;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+textarea{min-height:110px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);border-color:transparent}
+.opt{display:flex;align-items:center;gap:10px;padding:6px 0}
+.opt input{width:20px;height:20px;accent-color:var(--accent)}
+.e{color:var(--err);font-size:.85rem;margin:5px 0 0}
+.bad input,.bad select,.bad textarea{border-color:var(--err)}
+button{width:100%;font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:10px;padding:13px;margin-top:6px}
+.msg{text-align:center;padding:30px 10px}
+.msg .big{font-size:2.6rem}
+.foot{color:var(--muted);font-size:.8rem;text-align:center;margin-top:16px}
+</style>
+</head>
+<body>
+<main>
+<div class="card">
+{{if eq .State "form"}}
+<h1>{{.Spec.Title}}</h1>
+{{with .Spec.Description}}<p class="desc">{{.}}</p>{{end}}
+<form method="post" autocomplete="on" novalidate>
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+{{$v := .Values}}{{$e := .Errors}}
+{{range .Spec.Fields}}{{$val := index $v .ID}}{{$cur := ""}}{{if $val}}{{$cur = index $val 0}}{{end}}
+<div class="f{{if index $e .ID}} bad{{end}}">
+{{if and (eq .Type "checkbox") (not .Options)}}
+<label class="opt"><input type="checkbox" name="{{.ID}}" value="on"{{if $cur}} checked{{end}}> <span>{{.Label}}{{if .Required}} <span class="req">*</span>{{end}}</span></label>
+{{else}}
+<label class="l" for="f_{{.ID}}">{{.Label}}{{if .Required}} <span class="req">*</span>{{end}}</label>
+{{if eq .Type "textarea"}}<textarea id="f_{{.ID}}" name="{{.ID}}" placeholder="{{.Placeholder}}"{{if .Required}} required{{end}}>{{$cur}}</textarea>
+{{else if eq .Type "select"}}<select id="f_{{.ID}}" name="{{.ID}}"{{if .Required}} required{{end}}><option value="">Selecione…</option>{{range .Options}}<option{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}</select>
+{{else if eq .Type "radio"}}{{$id := .ID}}{{range .Options}}<label class="opt"><input type="radio" name="{{$id}}" value="{{.}}"{{if eq . $cur}} checked{{end}}> <span>{{.}}</span></label>{{end}}
+{{else if eq .Type "checkbox"}}{{$id := .ID}}{{range .Options}}<label class="opt"><input type="checkbox" name="{{$id}}" value="{{.}}"{{if has $val .}} checked{{end}}> <span>{{.}}</span></label>{{end}}
+{{else}}<input id="f_{{.ID}}" name="{{.ID}}" value="{{$cur}}" placeholder="{{.Placeholder}}"{{if .Required}} required{{end}}
+ {{- if eq .Type "email"}} type="email" autocomplete="email" inputmode="email"
+ {{- else if eq .Type "phone"}} type="tel" autocomplete="tel" inputmode="tel"
+ {{- else if eq .Type "number"}} type="text" inputmode="decimal"
+ {{- else if eq .Type "date"}} type="date"
+ {{- else if or (eq .Type "cpf") (eq .Type "cnpj")}} type="text" inputmode="numeric"
+ {{- else}} type="text"{{end}}>
+{{end}}
+{{end}}
+{{with .Help}}<p class="help">{{.}}</p>{{end}}
+{{with index $e .ID}}<p class="e">{{.}}</p>{{end}}
+</div>
+{{end}}
+<button type="submit">{{if .Spec.Submit}}{{.Spec.Submit}}{{else}}Enviar{{end}}</button>
+</form>
+{{else if eq .State "done"}}
+<div class="msg"><div class="big">✅</div><h1>Respostas enviadas</h1><p class="desc">Obrigado! Você já pode voltar para o WhatsApp.</p></div>
+{{else if eq .State "closed"}}
+<div class="msg"><div class="big">📬</div><h1>Formulário já enviado</h1><p class="desc">Este formulário já foi respondido. Se precisar corrigir algo, peça um novo link na conversa.</p></div>
+{{else if eq .State "expired"}}
+<div class="msg"><div class="big">⌛</div><h1>Link expirado</h1><p class="desc">Peça um novo link na conversa do WhatsApp.</p></div>
+{{else}}
+<div class="msg"><div class="big">🔗</div><h1>Link inválido</h1><p class="desc">Confira se o link está completo ou peça um novo na conversa.</p></div>
+{{end}}
+</div>
+<p class="foot">Suas respostas vão direto para quem enviou o formulário e não aparecem na conversa.</p>
+</main>
+</body>
+</html>

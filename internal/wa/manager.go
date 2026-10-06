@@ -55,6 +55,8 @@ type Manager struct {
 	webhook    *WebhookConfig
 	outboxKick chan struct{}
 
+	publicURL string // base of web-form links; "" = forms disabled (see forms.go)
+
 	groupNameCache      *namesCache // account -> joined-group subjects
 	newsletterNameCache *namesCache // account -> subscribed-newsletter names
 }
@@ -344,9 +346,9 @@ func (m *Manager) SendText(ctx context.Context, account, to, text string) (strin
 // SendResult reports an interactive send: the message ID and whether the
 // plain-text fallback was sent instead of the interactive message.
 type SendResult struct {
-	ID       string
-	Fallback bool
-	Err      string // why the interactive send was refused, when Fallback is true
+	ID       string `json:"id"`
+	Fallback bool   `json:"fallback,omitempty"`
+	Err      string `json:"fallback_reason,omitempty"` // why the interactive send was refused, when Fallback is true
 }
 
 // SendButtons sends a NativeFlow buttons message. flavor picks the stanza-node
