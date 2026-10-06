@@ -324,9 +324,10 @@ func listFallbackText(spec ListSpec) string {
 
 // Reply describes a tap on a button or list row that came back to us.
 type Reply struct {
-	Kind string // button | list
-	ID   string // button id / row id
-	Text string // label the user saw
+	Kind string            // button | list | flow
+	ID   string            // button id / row id / flow token
+	Text string            // label the user saw
+	Form map[string]string // flow: submitted fields (label → value)
 }
 
 // interactiveReply extracts a button/list tap from an incoming message.
@@ -336,7 +337,11 @@ func interactiveReply(m *waE2E.Message) *Reply {
 	}
 	if ir := m.GetInteractiveResponseMessage(); ir != nil {
 		r := &Reply{Kind: "button", Text: ir.GetBody().GetText()}
-		if nf := ir.GetNativeFlowResponseMessage(); nf != nil {
+		if nf := ir.GetNativeFlowResponseMessage(); nf != nil && nf.GetName() == "galaxy_message" {
+			r.Kind = "flow"
+			r.ID, r.Form = flowAnswers(nf.GetParamsJSON())
+			return r
+		} else if nf != nil {
 			var p map[string]any
 			if json.Unmarshal([]byte(nf.GetParamsJSON()), &p) == nil {
 				if id, ok := p["id"].(string); ok {
@@ -361,4 +366,154 @@ func interactiveReply(m *waE2E.Message) *Reply {
 		return &Reply{Kind: "button", ID: tr.GetSelectedID(), Text: tr.GetSelectedDisplayText()}
 	}
 	return nil
+}
+
+// ---- WhatsApp Flows (EXPERIMENTAL) -------------------------------------------
+//
+// A Flow is a NativeFlow "galaxy_message" button that opens a full-screen form.
+// The recipient's app fetches the screens from Meta by flow_id, so a flow
+// normally has to be published on a WhatsApp Business (API) account; whether a
+// personal account can send one at all is what this is for testing. Rendering
+// needs MessageVersion 3 (1 delivers but never opens).
+
+// FlowSpec describes a Flow message.
+type FlowSpec struct {
+	Text       string
+	Title      string
+	Footer     string
+	CTA        string         // button label
+	FlowID     string         // published flow id (or a Meta template flow)
+	FlowToken  string         // echoed back in the response, to correlate
+	Mode       string         // published (default) | draft
+	Action     string         // navigate (default) | data_exchange
+	Screen     string         // first screen id (navigate)
+	Data       map[string]any // initial screen data (navigate)
+	FlowJSON   string         // raw flow definition embedded in the message (unverified)
+	Extra      map[string]any // more button params, merged as-is (e.g. flow_metadata)
+	DummyReply bool           // put a quick_reply before the flow button (some renderers need it)
+}
+
+// buildFlowMessage turns a spec into a NativeFlow "galaxy_message" message.
+func buildFlowMessage(spec FlowSpec) (*waE2E.Message, error) {
+	text := strings.TrimSpace(spec.Text)
+	if text == "" {
+		return nil, invalid("text is required")
+	}
+	if strings.TrimSpace(spec.FlowID) == "" && strings.TrimSpace(spec.FlowJSON) == "" {
+		return nil, invalid("flowId or flowJson is required")
+	}
+	cta := strings.TrimSpace(spec.CTA)
+	if cta == "" {
+		cta = "Abrir"
+	}
+	mode, action := spec.Mode, spec.Action
+	if mode == "" {
+		mode = "published"
+	}
+	if action == "" {
+		action = "navigate"
+	}
+	params := map[string]any{
+		"flow_message_version": "3",
+		"flow_token":           spec.FlowToken,
+		"flow_id":              spec.FlowID,
+		"flow_cta":             cta,
+		"flow_action":          action,
+		"mode":                 mode,
+	}
+	if action == "navigate" {
+		payload := map[string]any{}
+		if spec.Screen != "" {
+			payload["screen"] = spec.Screen
+		}
+		if len(spec.Data) > 0 {
+			payload["data"] = spec.Data
+		}
+		params["flow_action_payload"] = payload
+	}
+	if spec.FlowJSON != "" {
+		params["flow_json"] = spec.FlowJSON
+	}
+	for k, v := range spec.Extra {
+		params[k] = v
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	var buttons []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton
+	if spec.DummyReply {
+		buttons = append(buttons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String("quick_reply"),
+			ButtonParamsJSON: proto.String(`{"display_text":"Ok","id":"flow_dummy"}`),
+		})
+	}
+	buttons = append(buttons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+		Name:             proto.String("galaxy_message"),
+		ButtonParamsJSON: proto.String(string(raw)),
+	})
+	im := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{Text: proto.String(text)},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:        buttons,
+				MessageVersion: proto.Int32(3),
+			},
+		},
+	}
+	if t := strings.TrimSpace(spec.Title); t != "" {
+		im.Header = &waE2E.InteractiveMessage_Header{Title: proto.String(t), HasMediaAttachment: proto.Bool(false)}
+	}
+	if f := strings.TrimSpace(spec.Footer); f != "" {
+		im.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(f)}
+	}
+	return &waE2E.Message{InteractiveMessage: im}, nil
+}
+
+// flowAnswers decodes the form fields of a galaxy_message response. The answer
+// sits as a JSON string in wa_flow_response_params.response_message; fields are
+// keyed by label (custom fields get label-derived names). Flows built on a data
+// endpoint send their own flat shape, which is passed through.
+func flowAnswers(paramsJSON string) (token string, form map[string]string) {
+	var p struct {
+		FlowToken string `json:"flow_token"`
+		Resp      struct {
+			ResponseMessage string `json:"response_message"`
+		} `json:"wa_flow_response_params"`
+	}
+	if json.Unmarshal([]byte(paramsJSON), &p) != nil {
+		return "", nil
+	}
+	form = map[string]string{}
+	var rm struct {
+		Screens []struct {
+			Components []struct {
+				Name  string `json:"name"`
+				Label string `json:"label"`
+				Value any    `json:"value"`
+			} `json:"components"`
+		} `json:"screens"`
+	}
+	if p.Resp.ResponseMessage != "" && json.Unmarshal([]byte(p.Resp.ResponseMessage), &rm) == nil && len(rm.Screens) > 0 {
+		for _, s := range rm.Screens {
+			for _, c := range s.Components {
+				key := c.Label
+				if key == "" {
+					key = c.Name
+				}
+				form[key] = fmt.Sprint(c.Value)
+			}
+		}
+		return p.FlowToken, form
+	}
+	var flat map[string]any
+	if json.Unmarshal([]byte(paramsJSON), &flat) == nil {
+		for k, v := range flat {
+			if k == "flow_token" || k == "wa_flow_response_params" {
+				continue
+			}
+			form[k] = fmt.Sprint(v)
+		}
+	}
+	return p.FlowToken, form
 }
