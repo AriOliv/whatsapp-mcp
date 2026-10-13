@@ -21,6 +21,7 @@ type Sender interface {
 	SendText(ctx context.Context, account, to, text string) (string, error)
 	SendMedia(ctx context.Context, account, to, kind, data, caption, mimeType, fileName string) (string, error)
 	SendButtons(ctx context.Context, account, to string, spec wa.ButtonsSpec, flavor string, fallback bool) (wa.SendResult, error)
+	SendCarousel(ctx context.Context, account, to string, spec wa.CarouselSpec, flavor string, fallback bool) (wa.SendResult, error)
 	SendList(ctx context.Context, account, to string, spec wa.ListSpec, fallback bool) (wa.SendResult, error)
 	SendForm(ctx context.Context, account, to string, spec wa.FormSpec) (wa.FormSent, error)
 	GetForm(ctx context.Context, account, id string) (*wa.FormView, error)
@@ -49,6 +50,7 @@ func New(s Sender, token string, accounts map[string]bool) *API {
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/send", a.guard(a.send))
 	mux.HandleFunc("POST /api/send/buttons", a.guard(a.sendButtons))
+	mux.HandleFunc("POST /api/send/carousel", a.guard(a.sendCarousel))
 	mux.HandleFunc("POST /api/send/list", a.guard(a.sendList))
 	mux.HandleFunc("POST /api/send/form", a.guard(a.sendForm))
 	mux.HandleFunc("GET /api/forms/{account}/{id}", a.guard(a.getForm))
@@ -156,6 +158,34 @@ func (a *API) sendButtons(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	spec := wa.ButtonsSpec{Text: req.Text, Title: req.Title, Footer: req.Footer, Buttons: req.Buttons}
 	res, err := a.s.SendButtons(ctx, req.Account, req.To, spec, req.Flavor, req.FallbackText)
+	a.writeSendResult(w, res, err)
+}
+
+
+type sendCarouselReq struct {
+	Account      string            `json:"account"`
+	To           string            `json:"to"`
+	Text         string            `json:"text"`
+	Title        string            `json:"title,omitempty"`
+	Footer       string            `json:"footer,omitempty"`
+	Cards        []wa.CarouselCard `json:"cards"`
+	Flavor       string            `json:"flavor,omitempty"`       // mixed (default) | full | bot (adds the "AI" label)
+	FallbackText bool              `json:"fallbackText,omitempty"` // send as plain text if WhatsApp refuses
+}
+
+func (a *API) sendCarousel(w http.ResponseWriter, r *http.Request) {
+	var req sendCarouselReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !a.allowed(w, req.Account) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	spec := wa.CarouselSpec{Text: req.Text, Title: req.Title, Footer: req.Footer, Cards: req.Cards}
+	res, err := a.s.SendCarousel(ctx, req.Account, req.To, spec, req.Flavor, req.FallbackText)
 	a.writeSendResult(w, res, err)
 }
 

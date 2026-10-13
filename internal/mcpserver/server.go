@@ -280,6 +280,18 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			}
 			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "buttons", in.Text), nil)
 		})
+
+	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_carousel", Description: "Send a multi-card horizontal carousel message. " +
+		"Each card can have a title, body, footer, and action buttons (quick_reply, url, call, copy). Up to 10 cards. " +
+		"If WhatsApp refuses it, set fallbackText=true to send the content formatted as plain text."}),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in sendCarouselArgs) (*mcp.CallToolResult, any, error) {
+			spec := wa.CarouselSpec{Text: in.Text, Title: in.Title, Footer: in.Footer, Cards: in.Cards}
+			res, err := mgr.SendCarousel(ctx, acct(ctx), in.Number, spec, in.Flavor, in.FallbackText)
+			if err != nil {
+				return done(nil, err)
+			}
+			return done(newInteractiveSentView(ctx, mgr, res, in.Number, "carousel", in.Text), nil)
+		})
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_send_form", Description: "Send a form to fill outside the chat. " +
 		"The message carries a button that opens a web page with the fields; the answers never appear in the chat " +
 		"(the person gets a short receipt). Fields: text, textarea, email, phone, number, date (YYYY-MM-DD), cpf, cnpj " +
@@ -550,6 +562,16 @@ type sendTextArgs struct {
 	Text   string `json:"text" jsonschema:"Message text"`
 }
 
+
+type sendCarouselArgs struct {
+	Number       string            `json:"number" jsonschema:"WhatsApp number or JID"`
+	Text         string            `json:"text" jsonschema:"Message body before the carousel"`
+	Title        string            `json:"title,omitempty" jsonschema:"Optional bold header"`
+	Footer       string            `json:"footer,omitempty" jsonschema:"Optional small footer text"`
+	Cards        []wa.CarouselCard `json:"cards" jsonschema:"Array of 1 to 10 cards, each with title, body, footer, and buttons"`
+	Flavor       string            `json:"flavor,omitempty" jsonschema:"Stanza shape: mixed (default), full or bot"`
+	FallbackText bool              `json:"fallbackText,omitempty" jsonschema:"If WhatsApp refuses the carousel, send as plain text"`
+}
 type sendButtonsArgs struct {
 	Number       string      `json:"number" jsonschema:"WhatsApp number or JID"`
 	Text         string      `json:"text" jsonschema:"Message body"`

@@ -388,6 +388,62 @@ func (m *Manager) SendButtons(ctx context.Context, account, to string, spec Butt
 	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
 }
 
+
+// SendCarousel sends a multi-card horizontal carousel message.
+// Uses the same NativeFlow interactive stanza nodes as SendButtons.
+func (m *Manager) SendCarousel(ctx context.Context, account, to string, spec CarouselSpec, flavor string, fallback bool) (SendResult, error) {
+	cli, err := m.clientFor(account)
+	if err != nil {
+		return SendResult{}, err
+	}
+	jid, err := resolveJID(to)
+	if err != nil {
+		return SendResult{}, err
+	}
+	for i := range spec.Cards {
+		card := &spec.Cards[i]
+		if imgData := strings.TrimSpace(card.Image); imgData != "" {
+			raw, err := loadBytes(ctx, imgData)
+			if err != nil {
+				return SendResult{}, fmt.Errorf("card %d image load: %w", i+1, err)
+			}
+			up, err := cli.Upload(ctx, raw, whatsmeow.MediaImage)
+			if err != nil {
+				return SendResult{}, fmt.Errorf("card %d image upload: %w", i+1, err)
+			}
+			card.ImageMessage = &waE2E.ImageMessage{
+				Mimetype:      proto.String("image/jpeg"),
+				URL:           &up.URL,
+				DirectPath:    &up.DirectPath,
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    &up.FileLength,
+			}
+		}
+	}
+	msg, err := buildCarouselMessage(spec)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if flavor == "" {
+		flavor = FlavorMixed
+	}
+	nodes := buttonsNodes(jid, flavor, time.Now())
+	resp, err := cli.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{AdditionalNodes: &nodes})
+	if err == nil {
+		return SendResult{ID: resp.ID}, nil
+	}
+	if !fallback {
+		return SendResult{}, fmt.Errorf("carousel send refused: %w", err)
+	}
+	resp, ferr := cli.SendMessage(ctx, jid, &waE2E.Message{Conversation: proto.String(carouselFallbackText(spec))})
+	if ferr != nil {
+		return SendResult{}, fmt.Errorf("carousel send refused (%v) and fallback failed: %w", err, ferr)
+	}
+	return SendResult{ID: resp.ID, Fallback: true, Err: err.Error()}, nil
+}
+
 // SendFlow sends a WhatsApp Flow ("galaxy_message") message. EXPERIMENTAL: from
 // a personal account the recipient may not be able to open it. Same stanza
 // nodes and fallback as SendButtons.
