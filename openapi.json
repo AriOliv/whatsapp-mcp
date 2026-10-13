@@ -709,6 +709,79 @@
           }
         }
       }
+    },
+    "/api/send/carousel": {
+      "post": {
+        "tags": [
+          "Envio"
+        ],
+        "summary": "Enviar mensagem com carrossel",
+        "operationId": "sendCarousel",
+        "description": "Carrossel de cards com rolagem horizontal (NativeFlow). Cada card pode ter título, corpo, rodapé e até 3 botões.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendCarouselRequest"
+              },
+              "example": {
+                "account": "5511915044043",
+                "to": "5521967582535",
+                "text": "Escolha um produto:",
+                "cards": [
+                  {
+                    "title": "BRLA → Dólar",
+                    "body": "Conversão instantânea",
+                    "buttons": [
+                      {
+                        "type": "quick_reply",
+                        "text": "Converter",
+                        "id": "card_1"
+                      }
+                    ]
+                  },
+                  {
+                    "title": "Pix Out",
+                    "body": "Envie via Pix",
+                    "buttons": [
+                      {
+                        "type": "quick_reply",
+                        "text": "Enviar Pix",
+                        "id": "card_2"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mensagem enviada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResultResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "502": {
+            "$ref": "#/components/responses/BadGateway"
+          }
+        }
+      }
     }
   },
   "webhooks": {
@@ -1451,6 +1524,84 @@
           "quoted_id": {
             "type": "string",
             "description": "ID da mensagem citada"
+          }
+        }
+      },
+      "CarouselCard": {
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Título opcional do card"
+          },
+          "body": {
+            "type": "string",
+            "description": "Texto principal do card"
+          },
+          "footer": {
+            "type": "string",
+            "description": "Rodapé opcional do card"
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Button"
+            },
+            "description": "Botões de ação do card (até 3 quick_reply ou até 10 no total)"
+          }
+        }
+      },
+      "SendCarouselRequest": {
+        "type": "object",
+        "required": [
+          "account",
+          "to",
+          "text",
+          "cards"
+        ],
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Conta remetente (apenas dígitos)"
+          },
+          "to": {
+            "type": "string",
+            "description": "Destinatário (número com DDI+DDD ou JID completo)"
+          },
+          "text": {
+            "type": "string",
+            "description": "Texto principal da mensagem acima do carrossel"
+          },
+          "title": {
+            "type": "string",
+            "description": "Título opcional do cabeçalho da mensagem"
+          },
+          "footer": {
+            "type": "string",
+            "description": "Rodapé opcional da mensagem"
+          },
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CarouselCard"
+            },
+            "description": "Lista de cards do carrossel (1 a 10 cards)"
+          },
+          "flavor": {
+            "type": "string",
+            "enum": [
+              "mixed",
+              "full",
+              "bot"
+            ],
+            "description": "Formato da stanza"
+          },
+          "fallbackText": {
+            "type": "boolean",
+            "description": "Enviar como texto simples se o WhatsApp recusar"
           }
         }
       }

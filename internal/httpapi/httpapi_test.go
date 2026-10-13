@@ -17,6 +17,7 @@ type fake struct {
 	sent    []string
 	buttons []wa.ButtonsSpec
 	lists   []wa.ListSpec
+	carousels []wa.CarouselSpec
 	forms   []wa.FormSpec
 	refuse  bool // simulate WhatsApp refusing the interactive send
 }
@@ -48,6 +49,14 @@ func (f *fake) SendButtons(_ context.Context, account, to string, spec wa.Button
 		return wa.SendResult{ID: "FB1", Fallback: true, Err: "405"}, nil
 	}
 	return wa.SendResult{ID: "BT1"}, nil
+}
+
+func (f *fake) SendCarousel(_ context.Context, account, to string, spec wa.CarouselSpec, flavor string, fallback bool) (wa.SendResult, error) {
+	if len(spec.Cards) == 0 {
+		return wa.SendResult{}, fmt.Errorf("%w: need cards", wa.ErrInvalidSpec)
+	}
+	f.carousels = append(f.carousels, spec)
+	return wa.SendResult{ID: "CR1"}, nil
 }
 
 func (f *fake) SendList(_ context.Context, account, to string, spec wa.ListSpec, fallback bool) (wa.SendResult, error) {

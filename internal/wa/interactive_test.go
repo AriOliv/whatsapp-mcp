@@ -278,3 +278,80 @@ func TestFallbackText(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCarouselMessage(t *testing.T) {
+	spec := CarouselSpec{
+		Text:   "Confira as opções:",
+		Title:  "Menu de Câmbio",
+		Footer: "Avenia Direct",
+		Cards: []CarouselCard{
+			{
+				Title:  "Pix In",
+				Body:   "Deposite BRL via Pix e receba BRLA na hora",
+				Footer: "Sem taxa",
+				Buttons: []Button{
+					{Type: "quick_reply", Text: "Receber Pix", ID: "pix_in"},
+				},
+			},
+			{
+				Title:  "Pix Out",
+				Body:   "Envie BRL para qualquer chave Pix a partir do saldo",
+				Footer: "Instantâneo",
+				Buttons: []Button{
+					{Type: "quick_reply", Text: "Enviar Pix", ID: "pix_out"},
+					{Type: "url", Text: "Ajuda", URL: "https://avenia.io"},
+				},
+			},
+		},
+	}
+	msg, err := buildCarouselMessage(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	im := msg.GetInteractiveMessage()
+	if im == nil {
+		t.Fatal("expected InteractiveMessage")
+	}
+	if im.GetBody().GetText() != "Confira as opções:" {
+		t.Fatalf("body = %q", im.GetBody().GetText())
+	}
+	if im.GetHeader().GetTitle() != "Menu de Câmbio" {
+		t.Fatalf("header = %q", im.GetHeader().GetTitle())
+	}
+	if im.GetFooter().GetText() != "Avenia Direct" {
+		t.Fatalf("footer = %q", im.GetFooter().GetText())
+	}
+	cm := im.GetCarouselMessage()
+	if cm == nil {
+		t.Fatal("expected CarouselMessage")
+	}
+	if len(cm.GetCards()) != 2 {
+		t.Fatalf("expected 2 cards, got %d", len(cm.GetCards()))
+	}
+	if cm.GetCarouselCardType() != waE2E.InteractiveMessage_CarouselMessage_HSCROLL_CARDS {
+		t.Fatalf("card type = %v", cm.GetCarouselCardType())
+	}
+	c1 := cm.GetCards()[0]
+	if c1.GetHeader().GetTitle() != "Pix In" || c1.GetBody().GetText() != "Deposite BRL via Pix e receba BRLA na hora" {
+		t.Fatalf("card 1 header/body mismatch: %+v", c1)
+	}
+	btns1 := c1.GetNativeFlowMessage().GetButtons()
+	if len(btns1) != 1 || btns1[0].GetName() != "quick_reply" {
+		t.Fatalf("card 1 buttons: %+v", btns1)
+	}
+}
+
+func TestBuildCarouselMessageErrors(t *testing.T) {
+	_, err := buildCarouselMessage(CarouselSpec{Text: ""})
+	if !errors.Is(err, ErrInvalidSpec) {
+		t.Errorf("expected ErrInvalidSpec on empty text, got %v", err)
+	}
+	_, err = buildCarouselMessage(CarouselSpec{Text: "x", Cards: nil})
+	if !errors.Is(err, ErrInvalidSpec) {
+		t.Errorf("expected ErrInvalidSpec on empty cards, got %v", err)
+	}
+	_, err = buildCarouselMessage(CarouselSpec{Text: "x", Cards: []CarouselCard{{Body: ""}}})
+	if !errors.Is(err, ErrInvalidSpec) {
+		t.Errorf("expected ErrInvalidSpec on empty card body, got %v", err)
+	}
+}

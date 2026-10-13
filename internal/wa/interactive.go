@@ -47,10 +47,11 @@ const (
 )
 
 const (
-	maxButtons      = 10
-	maxQuickReplies = 3
-	maxSections     = 10
-	maxRows         = 10
+	maxButtons       = 10
+	maxQuickReplies  = 3
+	maxSections      = 10
+	maxRows          = 10
+	maxCarouselCards = 10
 )
 
 // Button is one button of a buttons message.
@@ -93,19 +94,33 @@ type ListSpec struct {
 	Sections   []ListSection
 }
 
-// buildButtonsMessage turns a spec into a NativeFlow InteractiveMessage.
-func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
-	text := strings.TrimSpace(spec.Text)
-	if text == "" {
-		return nil, invalid("text is required")
+// CarouselCard represents a single card in a horizontal-scroll carousel message.
+type CarouselCard struct {
+	Title   string   `json:"title,omitempty"`
+	Body    string   `json:"body"`
+	Footer  string   `json:"footer,omitempty"`
+	Buttons []Button `json:"buttons,omitempty"`
+}
+
+// CarouselSpec describes a carousel message.
+type CarouselSpec struct {
+	Text   string         `json:"text"`
+	Title  string         `json:"title,omitempty"`
+	Footer string         `json:"footer,omitempty"`
+	Cards  []CarouselCard `json:"cards"`
+}
+
+func parseNativeButtons(btns []Button) ([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, error) {
+	if len(btns) == 0 {
+		return nil, nil
 	}
-	if len(spec.Buttons) == 0 || len(spec.Buttons) > maxButtons {
-		return nil, invalid("need between 1 and %d buttons, got %d", maxButtons, len(spec.Buttons))
+	if len(btns) > maxButtons {
+		return nil, invalid("need between 1 and %d buttons, got %d", maxButtons, len(btns))
 	}
 	quick := 0
 	ids := map[string]bool{}
-	buttons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(spec.Buttons))
-	for i, b := range spec.Buttons {
+	buttons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(btns))
+	for i, b := range btns {
 		label := strings.TrimSpace(b.Text)
 		if label == "" {
 			return nil, invalid("button %d: text is required", i+1)
@@ -155,6 +170,22 @@ func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
 	}
 	if quick > maxQuickReplies {
 		return nil, invalid("at most %d quick_reply buttons, got %d", maxQuickReplies, quick)
+	}
+	return buttons, nil
+}
+
+// buildButtonsMessage turns a spec into a NativeFlow InteractiveMessage.
+func buildButtonsMessage(spec ButtonsSpec) (*waE2E.Message, error) {
+	text := strings.TrimSpace(spec.Text)
+	if text == "" {
+		return nil, invalid("text is required")
+	}
+	if len(spec.Buttons) == 0 {
+		return nil, invalid("need between 1 and %d buttons, got 0", maxButtons)
+	}
+	buttons, err := parseNativeButtons(spec.Buttons)
+	if err != nil {
+		return nil, err
 	}
 
 	im := &waE2E.InteractiveMessage{
@@ -300,6 +331,113 @@ func buttonsFallbackText(spec ButtonsSpec) string {
 }
 
 // listFallbackText renders a list message as plain text, numbering every row.
+
+// buildCarouselMessage turns a CarouselSpec into an InteractiveMessage with CarouselMessage.
+func buildCarouselMessage(spec CarouselSpec) (*waE2E.Message, error) {
+	text := strings.TrimSpace(spec.Text)
+	if text == "" {
+		return nil, invalid("text is required")
+	}
+	if len(spec.Cards) == 0 || len(spec.Cards) > maxCarouselCards {
+		return nil, invalid("need between 1 and %d cards, got %d", maxCarouselCards, len(spec.Cards))
+	}
+
+	cards := make([]*waE2E.InteractiveMessage, 0, len(spec.Cards))
+	for i, c := range spec.Cards {
+		bodyText := strings.TrimSpace(c.Body)
+		if bodyText == "" {
+			return nil, invalid("card %d: body is required", i+1)
+		}
+
+		cardIM := &waE2E.InteractiveMessage{
+			Body: &waE2E.InteractiveMessage_Body{Text: proto.String(bodyText)},
+		}
+
+		if t := strings.TrimSpace(c.Title); t != "" {
+			cardIM.Header = &waE2E.InteractiveMessage_Header{
+				Title:              proto.String(t),
+				HasMediaAttachment: proto.Bool(false),
+			}
+		}
+		if f := strings.TrimSpace(c.Footer); f != "" {
+			cardIM.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(f)}
+		}
+
+		if len(c.Buttons) > 0 {
+			btns, err := parseNativeButtons(c.Buttons)
+			if err != nil {
+				return nil, fmt.Errorf("card %d: %w", i+1, err)
+			}
+			cardIM.InteractiveMessage = &waE2E.InteractiveMessage_NativeFlowMessage_{
+				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+					Buttons:        btns,
+					MessageVersion: proto.Int32(1),
+				},
+			}
+		}
+
+		cards = append(cards, cardIM)
+	}
+
+	im := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{Text: proto.String(text)},
+		InteractiveMessage: &waE2E.InteractiveMessage_CarouselMessage_{
+			CarouselMessage: &waE2E.InteractiveMessage_CarouselMessage{
+				Cards:            cards,
+				MessageVersion:   proto.Int32(1),
+				CarouselCardType: waE2E.InteractiveMessage_CarouselMessage_HSCROLL_CARDS.Enum(),
+			},
+		},
+	}
+	if t := strings.TrimSpace(spec.Title); t != "" {
+		im.Header = &waE2E.InteractiveMessage_Header{Title: proto.String(t), HasMediaAttachment: proto.Bool(false)}
+	}
+	if f := strings.TrimSpace(spec.Footer); f != "" {
+		im.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(f)}
+	}
+	return &waE2E.Message{InteractiveMessage: im}, nil
+}
+
+// carouselFallbackText renders a carousel message as plain text.
+func carouselFallbackText(spec CarouselSpec) string {
+	var b strings.Builder
+	if t := strings.TrimSpace(spec.Title); t != "" {
+		b.WriteString("*" + t + "*\n")
+	}
+	b.WriteString(strings.TrimSpace(spec.Text))
+	for i, c := range spec.Cards {
+		b.WriteString(fmt.Sprintf("\n\n--- [%d] ", i+1))
+		if t := strings.TrimSpace(c.Title); t != "" {
+			b.WriteString("*" + t + "* ---\n")
+		} else {
+			b.WriteString("---\n")
+		}
+		b.WriteString(strings.TrimSpace(c.Body))
+		n := 0
+		for _, btn := range c.Buttons {
+			label := strings.TrimSpace(btn.Text)
+			switch strings.ToLower(strings.TrimSpace(btn.Type)) {
+			case ButtonURL:
+				b.WriteString("\n🔗 " + label + ": " + strings.TrimSpace(btn.URL))
+			case ButtonCall:
+				b.WriteString("\n📞 " + label + ": " + strings.TrimSpace(btn.Phone))
+			case ButtonCopy:
+				b.WriteString("\n📋 " + label + ": " + btn.Code)
+			default:
+				n++
+				b.WriteString(fmt.Sprintf("\n%d. %s", n, label))
+			}
+		}
+		if f := strings.TrimSpace(c.Footer); f != "" {
+			b.WriteString("\n_" + f + "_")
+		}
+	}
+	if f := strings.TrimSpace(spec.Footer); f != "" {
+		b.WriteString("\n\n_" + f + "_")
+	}
+	return b.String()
+}
+
 func listFallbackText(spec ListSpec) string {
 	var b strings.Builder
 	if t := strings.TrimSpace(spec.Title); t != "" {
