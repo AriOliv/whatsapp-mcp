@@ -96,10 +96,12 @@ type ListSpec struct {
 
 // CarouselCard represents a single card in a horizontal-scroll carousel message.
 type CarouselCard struct {
-	Title   string   `json:"title,omitempty"`
-	Body    string   `json:"body"`
-	Footer  string   `json:"footer,omitempty"`
-	Buttons []Button `json:"buttons,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	Body         string   `json:"body"`
+	Footer       string   `json:"footer,omitempty"`
+	Buttons      []Button `json:"buttons,omitempty"`
+	Image        string   `json:"image,omitempty"` // URL or base64 (uploaded as media attachment)
+	ImageMessage *waE2E.ImageMessage `json:"-"`
 }
 
 // CarouselSpec describes a carousel message.
@@ -353,11 +355,21 @@ func buildCarouselMessage(spec CarouselSpec) (*waE2E.Message, error) {
 			Body: &waE2E.InteractiveMessage_Body{Text: proto.String(bodyText)},
 		}
 
+		header := &waE2E.InteractiveMessage_Header{}
+		hasHeader := false
 		if t := strings.TrimSpace(c.Title); t != "" {
-			cardIM.Header = &waE2E.InteractiveMessage_Header{
-				Title:              proto.String(t),
-				HasMediaAttachment: proto.Bool(false),
-			}
+			header.Title = proto.String(t)
+			hasHeader = true
+		}
+		if c.ImageMessage != nil {
+			header.Media = &waE2E.InteractiveMessage_Header_ImageMessage{ImageMessage: c.ImageMessage}
+			header.HasMediaAttachment = proto.Bool(true)
+			hasHeader = true
+		} else {
+			header.HasMediaAttachment = proto.Bool(false)
+		}
+		if hasHeader {
+			cardIM.Header = header
 		}
 		if f := strings.TrimSpace(c.Footer); f != "" {
 			cardIM.Footer = &waE2E.InteractiveMessage_Footer{Text: proto.String(f)}

@@ -1551,6 +1551,10 @@
               "$ref": "#/components/schemas/Button"
             },
             "description": "Botões de ação do card (até 3 quick_reply ou até 10 no total)"
+          },
+          "image": {
+            "type": "string",
+            "description": "URL pública (https://) ou string base64 da imagem do card"
           }
         }
       },

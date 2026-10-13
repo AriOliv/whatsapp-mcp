@@ -400,6 +400,28 @@ func (m *Manager) SendCarousel(ctx context.Context, account, to string, spec Car
 	if err != nil {
 		return SendResult{}, err
 	}
+	for i := range spec.Cards {
+		card := &spec.Cards[i]
+		if imgData := strings.TrimSpace(card.Image); imgData != "" {
+			raw, err := loadBytes(ctx, imgData)
+			if err != nil {
+				return SendResult{}, fmt.Errorf("card %d image load: %w", i+1, err)
+			}
+			up, err := cli.Upload(ctx, raw, whatsmeow.MediaImage)
+			if err != nil {
+				return SendResult{}, fmt.Errorf("card %d image upload: %w", i+1, err)
+			}
+			card.ImageMessage = &waE2E.ImageMessage{
+				Mimetype:      proto.String("image/jpeg"),
+				URL:           &up.URL,
+				DirectPath:    &up.DirectPath,
+				MediaKey:      up.MediaKey,
+				FileEncSHA256: up.FileEncSHA256,
+				FileSHA256:    up.FileSHA256,
+				FileLength:    &up.FileLength,
+			}
+		}
+	}
 	msg, err := buildCarouselMessage(spec)
 	if err != nil {
 		return SendResult{}, err
