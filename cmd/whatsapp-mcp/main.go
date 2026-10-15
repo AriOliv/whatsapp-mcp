@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -110,9 +111,20 @@ func main() {
 			api.Register(mux) // /api/* for the trusted gateway backend (static bearer, allowed accounts only)
 			fmt.Fprintf(os.Stderr, "gateway API on /api/* for %d account(s)\n", len(gwAccounts))
 		}
+		// /healthz doubles as the stability probe: per-account socket state plus
+		// reconnect counts since boot. Liveness only needs the 200, but without
+		// the body there is no way to tell "reconnected 80 times and recovered"
+		// from "one account has been down for an hour".
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			accounts, connects, disconnects := mgr.Health()
 			w.Header().Set("content-type", "application/json")
-			fmt.Fprintf(w, `{"ok":true,"accounts":%d}`, n)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":          true,
+				"accounts":    accounts,
+				"paired":      len(accounts),
+				"connects":    connects,
+				"disconnects": disconnects,
+			})
 		})
 		httpSrv := &http.Server{Addr: ":" + cfg.Port, Handler: mux}
 		go func() { <-ctx.Done(); _ = httpSrv.Close() }()

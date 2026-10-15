@@ -256,6 +256,25 @@ func (s *Store) SaveMessage(ctx context.Context, account string, m Message) erro
 	return err
 }
 
+// SavePlaceholder stores a message only if we have never seen that ID. Used for
+// messages that failed to decrypt: whatsmeow asks the sender to resend, and the
+// real message may land either before or after this call. Plain SaveMessage
+// upserts the body, so a late placeholder would overwrite the decrypted text —
+// this one leaves an existing row untouched.
+func (s *Store) SavePlaceholder(ctx context.Context, account string, m Message) error {
+	up := `INSERT INTO messages (account_jid,id,chat_jid,sender_jid,from_me,ts,body,media_type,media)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (account_jid,id) DO NOTHING`
+	if _, err := s.db.ExecContext(ctx, s.reb(up),
+		account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType, m.MediaProto); err != nil {
+		return err
+	}
+	ch := `INSERT INTO chats (account_jid,jid,last_ts) VALUES (?,?,?)
+		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
+	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
+	return err
+}
+
 // GetMedia returns the stored media proto (and media_type) for a message by ID.
 // A nil/empty result means the message has no downloadable media stored.
 func (s *Store) GetMedia(ctx context.Context, account, msgID string) ([]byte, string, error) {

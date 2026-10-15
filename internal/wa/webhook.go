@@ -98,7 +98,7 @@ func (m *Manager) inboundFor(ctx context.Context, account string, v *events.Mess
 	case info.SenderAlt.Server == types.DefaultUserServer:
 		from = info.SenderAlt.User
 	case info.Sender.Server == types.HiddenUserServer:
-		if cli, err := m.clientFor(account); err == nil {
+		if cli, err := m.clientFor(ctx, account); err == nil {
 			if pn, err := cli.Store.LIDs.GetPNForLID(ctx, info.Sender.ToNonAD()); err == nil && !pn.IsEmpty() {
 				from = pn.User
 			}
