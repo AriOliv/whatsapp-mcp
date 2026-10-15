@@ -145,12 +145,37 @@ func (m *Manager) newClient(dev *store.Device) *whatsmeow.Client {
 	return cli
 }
 
+// keysOf lists map keys for a log line.
+func keysOf(m map[string]time.Time) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // LoadAndConnect connects every already-paired device. Returns the number of
 // accounts connected.
 func (m *Manager) LoadAndConnect(ctx context.Context) (int, error) {
 	devices, err := m.container.GetAllDevices(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("get devices: %w", err)
+	}
+	// Restore the needs_repair markers before connecting: an account unlinked
+	// before the last restart has no device row left, so this is the only thing
+	// that still knows it is waiting for a human.
+	if marks, err := m.store.LoggedOutAccounts(ctx); err != nil {
+		m.log.Errorf("loading logged-out accounts failed: %v", err)
+	} else {
+		m.mu.Lock()
+		for acct, at := range marks {
+			m.loggedOut[acct] = at
+		}
+		m.mu.Unlock()
+		if len(marks) > 0 {
+			m.log.Warnf("%d account(s) still need re-pairing: %v", len(marks), keysOf(marks))
+		}
 	}
 	n := 0
 	for _, dev := range devices {
@@ -460,10 +485,17 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			}) // no webhook push: there is no content to deliver yet
 		case *events.LoggedOut:
 			key := accountKey(cli.Store.ID)
+			at := time.Now()
 			m.mu.Lock()
 			delete(m.clients, key)
-			m.loggedOut[key] = time.Now()
+			m.loggedOut[key] = at
 			m.mu.Unlock()
+			// Persisted too: whatsmeow deletes its device row here, so without a
+			// record of our own the account vanishes on the next restart — and
+			// with Recreate, every deploy is a restart.
+			if err := m.store.MarkLoggedOut(context.Background(), key, fmt.Sprint(v.Reason), at); err != nil {
+				m.log.Errorf("recording logout of %s failed, it will be forgotten on restart: %v", key, err)
+			}
 			// Not a reconnect: WhatsApp removed the linked device, so the
 			// session is gone and no amount of waiting brings it back. Kept in
 			// loggedOut so /healthz can say "needs_repair" instead of dropping
@@ -476,8 +508,14 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			m.mu.Lock()
 			m.perAccountConnects[key]++
 			per := m.perAccountConnects[key]
+			_, wasLoggedOut := m.loggedOut[key]
 			delete(m.loggedOut, key) // re-paired: no longer needs human action
 			m.mu.Unlock()
+			if wasLoggedOut {
+				if err := m.store.ClearLoggedOut(context.Background(), key); err != nil {
+					m.log.Errorf("clearing logout marker for %s failed: %v", key, err)
+				}
+			}
 			// Counted so a fix can be proved rather than felt: the socket churns
 			// on its own (measured ~75 reconnects/day over 6 accounts) and the
 			// only previous signal was a log line per event.

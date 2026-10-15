@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // A message that failed to decrypt is stored as a placeholder so it is visible
@@ -84,5 +85,42 @@ func TestPlaceholderBumpsChatActivity(t *testing.T) {
 	}
 	if chats[0].LastTS != 99 {
 		t.Fatalf("last activity should be bumped, got %d", chats[0].LastTS)
+	}
+}
+
+// whatsmeow deletes its own device row when WhatsApp unlinks an account, so our
+// marker is the only thing left that knows a human has to re-pair. It has to
+// outlive the process — with strategy:Recreate every deploy is a restart.
+func TestLoggedOutMarkerSurvivesAndClears(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	when := time.Now().Truncate(time.Millisecond)
+
+	if err := st.MarkLoggedOut(ctx, "5511998362963", "LoggedOut", when); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	marks, err := st.LoggedOutAccounts(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got, ok := marks["5511998362963"]; !ok {
+		t.Fatalf("marker must persist, got %+v", marks)
+	} else if !got.Equal(when) {
+		t.Fatalf("timestamp should round-trip: want %s, got %s", when, got)
+	}
+
+	// Re-logging the same account must update it, not duplicate it.
+	if err := st.MarkLoggedOut(ctx, "5511998362963", "LoggedOut", when.Add(time.Hour)); err != nil {
+		t.Fatalf("re-mark: %v", err)
+	}
+	if marks, _ = st.LoggedOutAccounts(ctx); len(marks) != 1 {
+		t.Fatalf("want 1 row after re-mark, got %d", len(marks))
+	}
+
+	if err := st.ClearLoggedOut(ctx, "5511998362963"); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if marks, _ = st.LoggedOutAccounts(ctx); len(marks) != 0 {
+		t.Fatalf("re-pairing must clear the marker, got %+v", marks)
 	}
 }

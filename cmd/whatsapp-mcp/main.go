@@ -117,13 +117,25 @@ func main() {
 		// from "one account has been down for an hour".
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			accounts, connects, disconnects := mgr.Health()
+			live, needRepair := 0, 0
+			for _, a := range accounts {
+				if a.State == wa.AccountNeedsRepair {
+					needRepair++
+				} else {
+					live++
+				}
+			}
 			w.Header().Set("content-type", "application/json")
+			// `ok` stays true with an unlinked account: the server is healthy and
+			// liveness must not restart the pod over something only a re-pair
+			// fixes. needs_repair is what a dashboard alerts on.
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":          true,
-				"accounts":    accounts,
-				"paired":      len(accounts),
-				"connects":    connects,
-				"disconnects": disconnects,
+				"ok":           true,
+				"accounts":     accounts,
+				"paired":       live,
+				"needs_repair": needRepair,
+				"connects":     connects,
+				"disconnects":  disconnects,
 			})
 		})
 		httpSrv := &http.Server{Addr: ":" + cfg.Port, Handler: mux}

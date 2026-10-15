@@ -170,6 +170,16 @@ func (s *Store) Init(ctx context.Context) error {
 			PRIMARY KEY (account_jid, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(account_jid, chat_jid, ts)`,
+		// Accounts WhatsApp unlinked. whatsmeow deletes the device from its own
+		// store on logout, so after a restart there is nothing left to say the
+		// account ever existed — it just disappears from /healthz. Persisting it
+		// here is what lets a dashboard keep reporting needs_repair until a human
+		// actually re-pairs.
+		`CREATE TABLE IF NOT EXISTS logged_out_accounts (
+			account_jid   TEXT PRIMARY KEY,
+			logged_out_at BIGINT NOT NULL,
+			reason        TEXT
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -273,6 +283,40 @@ func (s *Store) SavePlaceholder(ctx context.Context, account string, m Message) 
 		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
 	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
 	return err
+}
+
+// MarkLoggedOut records that WhatsApp unlinked an account, so it survives the
+// restart that wipes the in-memory flag (and the whatsmeow device row).
+func (s *Store) MarkLoggedOut(ctx context.Context, account, reason string, at time.Time) error {
+	q := `INSERT INTO logged_out_accounts (account_jid, logged_out_at, reason) VALUES (?,?,?)
+		ON CONFLICT (account_jid) DO UPDATE SET logged_out_at=excluded.logged_out_at, reason=excluded.reason`
+	_, err := s.db.ExecContext(ctx, s.reb(q), account, at.UnixMilli(), reason)
+	return err
+}
+
+// ClearLoggedOut drops the marker once the account is paired again.
+func (s *Store) ClearLoggedOut(ctx context.Context, account string) error {
+	_, err := s.db.ExecContext(ctx, s.reb(`DELETE FROM logged_out_accounts WHERE account_jid=?`), account)
+	return err
+}
+
+// LoggedOutAccounts returns every account still awaiting a re-pair.
+func (s *Store) LoggedOutAccounts(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_jid, logged_out_at FROM logged_out_accounts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var acct string
+		var ms int64
+		if err := rows.Scan(&acct, &ms); err != nil {
+			return nil, err
+		}
+		out[acct] = time.UnixMilli(ms)
+	}
+	return out, rows.Err()
 }
 
 // GetMedia returns the stored media proto (and media_type) for a message by ID.
