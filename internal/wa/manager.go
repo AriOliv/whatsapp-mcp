@@ -177,6 +177,26 @@ func (m *Manager) LoadAndConnect(ctx context.Context) (int, error) {
 			m.log.Warnf("%d account(s) still need re-pairing: %v", len(marks), keysOf(marks))
 		}
 	}
+	// Catch accounts unlinked before this table existed: whatsmeow already
+	// deleted their device, so a surviving OAuth token is the only evidence they
+	// were ever paired. Without this the first deploy reports needs_repair: 0
+	// while an account is in fact dead — which reads as "all clear".
+	live := make([]string, 0, len(devices))
+	for _, dev := range devices {
+		if k := accountKey(dev.ID); k != "" {
+			live = append(live, k)
+		}
+	}
+	if marked, err := m.store.BackfillLoggedOut(ctx, live, time.Now()); err != nil {
+		m.log.Errorf("backfilling logged-out accounts failed: %v", err)
+	} else if len(marked) > 0 {
+		m.mu.Lock()
+		for _, acct := range marked {
+			m.loggedOut[acct] = time.Now()
+		}
+		m.mu.Unlock()
+		m.log.Warnf("%d account(s) have a token but no device — marking as needing re-pair: %v", len(marked), marked)
+	}
 	n := 0
 	for _, dev := range devices {
 		cli := m.newClient(dev)

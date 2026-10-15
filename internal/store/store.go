@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -317,6 +318,59 @@ func (s *Store) LoggedOutAccounts(ctx context.Context) (map[string]time.Time, er
 		out[acct] = time.UnixMilli(ms)
 	}
 	return out, rows.Err()
+}
+
+// BackfillLoggedOut marks accounts that still hold a valid OAuth refresh token
+// but no longer have a whatsmeow device, recording them as unlinked at `at`.
+//
+// It exists for accounts WhatsApp unlinked *before* this table existed:
+// whatsmeow had already deleted the device row, so nothing else remembers them
+// and /healthz would report needs_repair: 0 while the account is in fact dead.
+// Having paired is what the surviving refresh token proves. Rows already
+// present are left alone, so a real logout timestamp is never overwritten by
+// this estimate. Returns the accounts it marked.
+func (s *Store) BackfillLoggedOut(ctx context.Context, liveAccounts []string, at time.Time) ([]string, error) {
+	live := map[string]bool{}
+	for _, a := range liveAccounts {
+		live[a] = true
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT sub FROM oauth_refresh_tokens WHERE sub IS NOT NULL AND sub <> ''`)
+	if err != nil {
+		// No OAuth table (stdio mode): nothing to backfill, not an error.
+		return nil, nil
+	}
+	var subs []string
+	for rows.Next() {
+		var sub string
+		if err := rows.Scan(&sub); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var marked []string
+	for _, sub := range subs {
+		if live[sub] {
+			continue
+		}
+		q := `INSERT INTO logged_out_accounts (account_jid, logged_out_at, reason) VALUES (?,?,?)
+			ON CONFLICT (account_jid) DO NOTHING`
+		res, err := s.db.ExecContext(ctx, s.reb(q), sub, at.UnixMilli(), "detected at startup: token without device")
+		if err != nil {
+			return marked, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			marked = append(marked, sub)
+		}
+	}
+	sort.Strings(marked)
+	return marked, nil
 }
 
 // GetMedia returns the stored media proto (and media_type) for a message by ID.
