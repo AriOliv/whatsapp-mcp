@@ -295,7 +295,7 @@ func (m *Manager) SendForm(ctx context.Context, account, to string, spec FormSpe
 	if !strings.HasPrefix(publicURL, "https://") {
 		return FormSent{}, errors.New("forms are disabled: they need the HTTP server with an https PUBLIC_URL")
 	}
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return FormSent{}, err
 	}
@@ -399,7 +399,7 @@ func (m *Manager) SubmitForm(ctx context.Context, token string, raw map[string][
 // GetForm returns a form of account (status and answers).
 func (m *Manager) GetForm(ctx context.Context, account, id string) (*FormView, error) {
 	if account == "" {
-		cli, err := m.clientFor("")
+		cli, err := m.clientFor(ctx, "")
 		if err != nil {
 			return nil, err
 		}

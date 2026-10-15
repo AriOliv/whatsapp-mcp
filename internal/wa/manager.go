@@ -42,6 +42,14 @@ type Manager struct {
 	def     string                       // default account key (stdio)
 	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
 
+	// Connection churn counters, exposed by /healthz. The socket drops and
+	// re-authenticates on its own many times a day; without a count there is no
+	// way to tell an improvement from a quiet afternoon.
+	connects           atomic.Uint64
+	disconnects        atomic.Uint64
+	perAccountConnects map[string]int       // guarded by mu
+	loggedOut          map[string]time.Time // account -> when WhatsApp unlinked it; guarded by mu
+
 	// Received messages are stored by a single writer goroutine instead of by
 	// the whatsmeow event handler; see ingest.go for why.
 	ingest        chan ingestItem
@@ -90,6 +98,8 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		store:               st,
 		log:                 logger,
 		clients:             map[string]*whatsmeow.Client{},
+		perAccountConnects:  map[string]int{},
+		loggedOut:           map[string]time.Time{},
 		flows:               map[string]*PairFlow{},
 		outboxKick:          make(chan struct{}, 1),
 		pictures:            newPictureCache(),
@@ -120,6 +130,31 @@ func accountKey(jid *types.JID) string {
 	return jid.User
 }
 
+// newClient builds a whatsmeow client with the connection settings this server
+// relies on. Every client must come from here: a device built elsewhere would
+// silently lose these, and the symptom (a message that never arrives) is
+// invisible.
+func (m *Manager) newClient(dev *store.Device) *whatsmeow.Client {
+	cli := whatsmeow.NewClient(dev, m.log)
+	// When a message cannot be decrypted, whatsmeow asks the sender to resend.
+	// If the sender is offline that never arrives and the message is lost for
+	// good. With this, the client also asks our own phone for the plaintext
+	// after RequestFromPhoneDelay (5s) — the only recovery path that does not
+	// depend on the other device being online. Off by default upstream.
+	cli.AutomaticMessageRerequestFromPhone = true
+	return cli
+}
+
+// keysOf lists map keys for a log line.
+func keysOf(m map[string]time.Time) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // LoadAndConnect connects every already-paired device. Returns the number of
 // accounts connected.
 func (m *Manager) LoadAndConnect(ctx context.Context) (int, error) {
@@ -127,9 +162,44 @@ func (m *Manager) LoadAndConnect(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get devices: %w", err)
 	}
+	// Restore the needs_repair markers before connecting: an account unlinked
+	// before the last restart has no device row left, so this is the only thing
+	// that still knows it is waiting for a human.
+	if marks, err := m.store.LoggedOutAccounts(ctx); err != nil {
+		m.log.Errorf("loading logged-out accounts failed: %v", err)
+	} else {
+		m.mu.Lock()
+		for acct, at := range marks {
+			m.loggedOut[acct] = at
+		}
+		m.mu.Unlock()
+		if len(marks) > 0 {
+			m.log.Warnf("%d account(s) still need re-pairing: %v", len(marks), keysOf(marks))
+		}
+	}
+	// Catch accounts unlinked before this table existed: whatsmeow already
+	// deleted their device, so a surviving OAuth token is the only evidence they
+	// were ever paired. Without this the first deploy reports needs_repair: 0
+	// while an account is in fact dead — which reads as "all clear".
+	live := make([]string, 0, len(devices))
+	for _, dev := range devices {
+		if k := accountKey(dev.ID); k != "" {
+			live = append(live, k)
+		}
+	}
+	if marked, err := m.store.BackfillLoggedOut(ctx, live, time.Now()); err != nil {
+		m.log.Errorf("backfilling logged-out accounts failed: %v", err)
+	} else if len(marked) > 0 {
+		m.mu.Lock()
+		for _, acct := range marked {
+			m.loggedOut[acct] = time.Now()
+		}
+		m.mu.Unlock()
+		m.log.Warnf("%d account(s) have a token but no device — marking as needing re-pair: %v", len(marked), marked)
+	}
 	n := 0
 	for _, dev := range devices {
-		cli := whatsmeow.NewClient(dev, m.log)
+		cli := m.newClient(dev)
 		m.register(cli)
 		if err := cli.Connect(); err != nil {
 			m.log.Errorf("connect %s: %v", accountKey(dev.ID), err)
@@ -157,7 +227,7 @@ func (m *Manager) register(cli *whatsmeow.Client) {
 // local (stdio) pairing. Blocks until paired, timeout, or ctx cancel.
 func (m *Manager) PairInteractive(ctx context.Context) error {
 	dev := m.container.NewDevice()
-	cli := whatsmeow.NewClient(dev, m.log)
+	cli := m.newClient(dev)
 	qrChan, err := cli.GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("qr channel: %w", err)
@@ -205,7 +275,7 @@ func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(s
 		return fmt.Errorf("invalid phone number %q", number)
 	}
 	dev := m.container.NewDevice()
-	cli := whatsmeow.NewClient(dev, m.log)
+	cli := m.newClient(dev)
 	qrChan, err := cli.GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("qr channel: %w", err)
@@ -247,17 +317,127 @@ func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(s
 	return fmt.Errorf("pairing channel closed")
 }
 
-func (m *Manager) clientFor(account string) (*whatsmeow.Client, error) {
+// reconnectGrace is how long clientFor waits for a client that is mid-reconnect
+// before giving up. WhatsApp drops the websocket routinely (measured: ~75 times
+// a day across 6 accounts, every one of them followed by a successful
+// re-auth), and whatsmeow reconnects on its own with a backoff of
+// AutoReconnectErrors*2s. Without this wait, any tool call that landed in that
+// window failed with "websocket not connected" — which is what users reported
+// as the server "dropping". The window is seconds, so a short wait converts a
+// hard error into a small latency bump.
+const reconnectGrace = 20 * time.Second
+
+// lookupClient returns the registered client without waiting for a reconnect.
+// For callers that only read fields off the local device store (own JID, push
+// name): those are available whether or not the socket is up, so blocking them
+// on a reconnect would stall a listing for no gain.
+func (m *Manager) lookupClient(account string) *whatsmeow.Client {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if account == "" {
 		account = m.def
 	}
+	return m.clients[account]
+}
+
+// clientFor returns the client for an account, waiting out a reconnect in
+// progress. It blocks only while the socket is actually down; a healthy client
+// returns immediately.
+//
+// It does NOT retry the operation itself: sends are not idempotent, so the
+// caller gets one connected client and one attempt. Waiting before the send is
+// safe, re-sending after an ambiguous failure is not — it duplicates messages.
+func (m *Manager) clientFor(ctx context.Context, account string) (*whatsmeow.Client, error) {
+	m.mu.RLock()
+	if account == "" {
+		account = m.def
+	}
 	cli := m.clients[account]
+	loggedOutAt, wasLoggedOut := m.loggedOut[account]
+	m.mu.RUnlock()
 	if cli == nil {
+		// Distinguish "never paired" from "was paired until WhatsApp unlinked
+		// it": the second needs a re-pair, and saying "pair one first" for an
+		// account the user believes is connected hides that.
+		if wasLoggedOut {
+			return nil, fmt.Errorf("WhatsApp account %q was logged out (device removed) at %s — re-pair it to continue",
+				account, loggedOutAt.UTC().Format(time.RFC3339))
+		}
 		return nil, fmt.Errorf("no connected WhatsApp account %q — pair one first", account)
 	}
+	if cli.IsConnected() && cli.IsLoggedIn() {
+		return cli, nil
+	}
+
+	// Mid-reconnect. WaitForConnection is event-driven (no polling) and returns
+	// early if the disconnect was deliberate, e.g. a logout or shutdown.
+	deadline := reconnectGrace
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < deadline {
+			deadline = left
+		}
+	}
+	if deadline <= 0 || !cli.WaitForConnection(deadline) {
+		m.log.Warnf("account %s still disconnected after %s", account, deadline)
+		return nil, fmt.Errorf("WhatsApp account %q is reconnecting — try again in a few seconds", account)
+	}
 	return cli, nil
+}
+
+// Account states reported by /healthz. The distinction that matters is the last
+// one: connected and reconnecting both resolve on their own, needs_repair never
+// does — it waits for a human to scan a QR.
+const (
+	AccountConnected    = "connected"
+	AccountReconnecting = "reconnecting"
+	AccountNeedsRepair  = "needs_repair"
+)
+
+// AccountHealth is a per-account connection snapshot for /healthz.
+type AccountHealth struct {
+	Account    string `json:"account"`
+	State      string `json:"state"`
+	Connected  bool   `json:"connected"`
+	LoggedIn   bool   `json:"logged_in"`
+	Reconnects int    `json:"reconnects"`
+	// LoggedOutAt is set only for needs_repair, so a dashboard can show how long
+	// the account has been down.
+	LoggedOutAt string `json:"logged_out_at,omitempty"`
+}
+
+// Health reports socket state per account plus churn counters since boot. This
+// is the measurement the stability work was missing: reconnects are expected,
+// but an account stuck disconnected is not, and only this tells them apart.
+func (m *Manager) Health() (accounts []AccountHealth, connects, disconnects uint64) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	accounts = make([]AccountHealth, 0, len(m.clients)+len(m.loggedOut)) // never nil: renders as [] not null
+	for key, cli := range m.clients {
+		connected, loggedIn := cli.IsConnected(), cli.IsLoggedIn()
+		state := AccountReconnecting
+		if connected && loggedIn {
+			state = AccountConnected
+		}
+		accounts = append(accounts, AccountHealth{
+			Account:    key,
+			State:      state,
+			Connected:  connected,
+			LoggedIn:   loggedIn,
+			Reconnects: m.perAccountConnects[key],
+		})
+	}
+	// Logged-out accounts have no client left, so without this they would simply
+	// vanish from the listing and look like they were never paired.
+	for key, at := range m.loggedOut {
+		accounts = append(accounts, AccountHealth{
+			Account:     key,
+			State:       AccountNeedsRepair,
+			Reconnects:  m.perAccountConnects[key],
+			LoggedOutAt: at.UTC().Format(time.RFC3339),
+		})
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Account < accounts[j].Account })
+	return accounts, m.connects.Load(), m.disconnects.Load()
 }
 
 // HasDevice reports whether the given subject (phone) has a live client. Used by
@@ -269,6 +449,10 @@ func (m *Manager) HasDevice(sub string) bool {
 	defer m.mu.RUnlock()
 	return m.clients[sub] != nil
 }
+
+// undecryptableBody marks a message we received but could not decrypt. It is
+// replaced by the real text if the sender honours the retry receipt.
+const undecryptableBody = "[mensagem não decifrada — aguardando reenvio do remetente]"
 
 // handler persists incoming messages into our store and reacts to lifecycle.
 func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
@@ -297,14 +481,68 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 				MediaProto: mediaRaw,
 			}
 			m.enqueueMessage(acct, msg, m.inboundFor(context.Background(), acct, v, msg))
+		case *events.UndecryptableMessage:
+			// A message arrived that we could not decrypt — most often a group
+			// message whose sender key we are missing after a reconnect.
+			// whatsmeow already asked the sender to resend (message.go
+			// sendRetryReceipt); if that works the real *events.Message lands
+			// later and overwrites this row, because SaveMessage upserts on
+			// (account_jid, id).
+			//
+			// Until then we store a placeholder. Dropping it is worse than an
+			// ugly row: the message simply would not exist for find_messages,
+			// with nothing to show that something was missed.
+			acct := accountKey(cli.Store.ID)
+			m.log.Warnf("undecryptable message %s in %s (unavailable=%v, mode=%s) — stored as placeholder, retry receipt sent",
+				v.Info.ID, v.Info.Chat, v.IsUnavailable, v.DecryptFailMode)
+			m.enqueuePlaceholder(acct, appstore.Message{
+				ID:        v.Info.ID,
+				ChatJID:   v.Info.Chat.String(),
+				SenderJID: v.Info.Sender.String(),
+				FromMe:    v.Info.IsFromMe,
+				TS:        v.Info.Timestamp.UnixMilli(),
+				Body:      undecryptableBody,
+			}) // no webhook push: there is no content to deliver yet
 		case *events.LoggedOut:
 			key := accountKey(cli.Store.ID)
+			at := time.Now()
 			m.mu.Lock()
 			delete(m.clients, key)
+			m.loggedOut[key] = at
 			m.mu.Unlock()
-			m.log.Warnf("account %s logged out", key)
+			// Persisted too: whatsmeow deletes its device row here, so without a
+			// record of our own the account vanishes on the next restart — and
+			// with Recreate, every deploy is a restart.
+			if err := m.store.MarkLoggedOut(context.Background(), key, fmt.Sprint(v.Reason), at); err != nil {
+				m.log.Errorf("recording logout of %s failed, it will be forgotten on restart: %v", key, err)
+			}
+			// Not a reconnect: WhatsApp removed the linked device, so the
+			// session is gone and no amount of waiting brings it back. Kept in
+			// loggedOut so /healthz can say "needs_repair" instead of dropping
+			// the account from the listing entirely — which is how one account
+			// sat dead for hours with nobody noticing.
+			m.log.Errorf("account %s was logged out (device removed) — needs re-pairing, reason: %v", key, v.Reason)
 		case *events.Connected:
-			m.log.Infof("account %s connected", accountKey(cli.Store.ID))
+			key := accountKey(cli.Store.ID)
+			n := m.connects.Add(1)
+			m.mu.Lock()
+			m.perAccountConnects[key]++
+			per := m.perAccountConnects[key]
+			_, wasLoggedOut := m.loggedOut[key]
+			delete(m.loggedOut, key) // re-paired: no longer needs human action
+			m.mu.Unlock()
+			if wasLoggedOut {
+				if err := m.store.ClearLoggedOut(context.Background(), key); err != nil {
+					m.log.Errorf("clearing logout marker for %s failed: %v", key, err)
+				}
+			}
+			// Counted so a fix can be proved rather than felt: the socket churns
+			// on its own (measured ~75 reconnects/day over 6 accounts) and the
+			// only previous signal was a log line per event.
+			m.log.Infof("account %s connected (reconnect #%d for this account, %d total since boot)", key, per, n)
+		case *events.Disconnected:
+			m.disconnects.Add(1)
+			m.log.Warnf("account %s disconnected — whatsmeow will reconnect", accountKey(cli.Store.ID))
 		}
 	}
 }
@@ -331,7 +569,7 @@ func resolveJID(s string) (types.JID, error) {
 
 // SendText sends a plain text message; returns the sent message ID.
 func (m *Manager) SendText(ctx context.Context, account, to, text string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -358,7 +596,7 @@ type SendResult struct {
 // shape (FlavorMixed by default). If WhatsApp refuses it and fallback is set, the
 // same content goes out as plain text instead.
 func (m *Manager) SendButtons(ctx context.Context, account, to string, spec ButtonsSpec, flavor string, fallback bool) (SendResult, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -392,7 +630,7 @@ func (m *Manager) SendButtons(ctx context.Context, account, to string, spec Butt
 // SendCarousel sends a multi-card horizontal carousel message.
 // Uses the same NativeFlow interactive stanza nodes as SendButtons.
 func (m *Manager) SendCarousel(ctx context.Context, account, to string, spec CarouselSpec, flavor string, fallback bool) (SendResult, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -448,7 +686,7 @@ func (m *Manager) SendCarousel(ctx context.Context, account, to string, spec Car
 // a personal account the recipient may not be able to open it. Same stanza
 // nodes and fallback as SendButtons.
 func (m *Manager) SendFlow(ctx context.Context, account, to string, spec FlowSpec, flavor string, fallback bool) (SendResult, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -482,7 +720,7 @@ func (m *Manager) SendFlow(ctx context.Context, account, to string, spec FlowSpe
 // node itself. If WhatsApp refuses it and fallback is set, the rows go out as a
 // numbered plain-text list instead.
 func (m *Manager) SendList(ctx context.Context, account, to string, spec ListSpec, fallback bool) (SendResult, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -511,7 +749,7 @@ func (m *Manager) SendList(ctx context.Context, account, to string, spec ListSpe
 // SendMedia uploads and sends an image/video/document/audio. `data` is base64 or
 // an http(s) URL; kind is one of image|video|document|audio.
 func (m *Manager) SendMedia(ctx context.Context, account, to, kind, data, caption, mimeType, fileName string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -576,7 +814,7 @@ func (m *Manager) SendMedia(ctx context.Context, account, to, kind, data, captio
 
 // React reacts to a message (empty emoji removes the reaction).
 func (m *Manager) React(ctx context.Context, account, chat, sender, msgID, emoji string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -615,7 +853,7 @@ type Contact struct {
 // contacts, or resolved from the LID→phone map for @lid contacts when a mapping
 // is known (empty otherwise — the number is private in that case).
 func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Contact, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +900,7 @@ func contactNumber(jid types.JID, lidMap map[string]string) string {
 
 // CheckNumbers reports which numbers are on WhatsApp.
 func (m *Manager) CheckNumbers(ctx context.Context, account string, numbers []string) ([]types.IsOnWhatsAppResponse, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -671,7 +909,7 @@ func (m *Manager) CheckNumbers(ctx context.Context, account string, numbers []st
 
 // Groups returns all joined groups.
 func (m *Manager) Groups(ctx context.Context, account string) ([]*types.GroupInfo, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +918,7 @@ func (m *Manager) Groups(ctx context.Context, account string) ([]*types.GroupInf
 
 // GroupInfo returns info for one group.
 func (m *Manager) GroupInfo(ctx context.Context, account, groupJID string) (*types.GroupInfo, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -693,7 +931,7 @@ func (m *Manager) GroupInfo(ctx context.Context, account, groupJID string) (*typ
 
 // CreateGroup creates a group with the given participants (numbers or JIDs).
 func (m *Manager) CreateGroup(ctx context.Context, account, name string, participants []string) (*types.GroupInfo, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -706,7 +944,7 @@ func (m *Manager) CreateGroup(ctx context.Context, account, name string, partici
 
 // InviteLink returns a group's invite link.
 func (m *Manager) InviteLink(ctx context.Context, account, groupJID string, reset bool) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -719,7 +957,7 @@ func (m *Manager) InviteLink(ctx context.Context, account, groupJID string, rese
 
 // UpdateParticipants add/remove/promote/demote group members.
 func (m *Manager) UpdateParticipants(ctx context.Context, account, groupJID, action string, participants []string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -750,7 +988,7 @@ func (m *Manager) UpdateParticipants(ctx context.Context, account, groupJID, act
 
 // SetGroupName changes a group's subject.
 func (m *Manager) SetGroupName(ctx context.Context, account, groupJID, name string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -763,7 +1001,7 @@ func (m *Manager) SetGroupName(ctx context.Context, account, groupJID, name stri
 
 // LeaveGroup leaves a group.
 func (m *Manager) LeaveGroup(ctx context.Context, account, groupJID string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -798,7 +1036,7 @@ func (m *Manager) SendSticker(ctx context.Context, account, to, data string) (st
 
 // SendLocation sends a location pin.
 func (m *Manager) SendLocation(ctx context.Context, account, to string, lat, lon float64, name, address string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -818,7 +1056,7 @@ func (m *Manager) SendLocation(ctx context.Context, account, to string, lat, lon
 
 // SendContact sends a single contact card.
 func (m *Manager) SendContact(ctx context.Context, account, to, fullName, phone string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -839,7 +1077,7 @@ func (m *Manager) SendContact(ctx context.Context, account, to, fullName, phone 
 
 // SendPoll sends a poll.
 func (m *Manager) SendPoll(ctx context.Context, account, to, name string, options []string, selectable int) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -859,7 +1097,7 @@ func (m *Manager) SendPoll(ctx context.Context, account, to, name string, option
 
 // DeleteMessage revokes (deletes for everyone) one of our own messages.
 func (m *Manager) DeleteMessage(ctx context.Context, account, chat, msgID string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -880,7 +1118,7 @@ func (m *Manager) DeleteMessage(ctx context.Context, account, chat, msgID string
 
 // EditMessage edits the text of one of our own messages.
 func (m *Manager) EditMessage(ctx context.Context, account, chat, msgID, newText string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -898,7 +1136,7 @@ func (m *Manager) EditMessage(ctx context.Context, account, chat, msgID, newText
 
 // SetPresence sets global presence: available | unavailable.
 func (m *Manager) SetPresence(ctx context.Context, account, presence string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -914,7 +1152,7 @@ func (m *Manager) SetPresence(ctx context.Context, account, presence string) err
 
 // ChatPresence sends a typing/recording indicator to a chat.
 func (m *Manager) ChatPresence(ctx context.Context, account, to, state string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -936,7 +1174,7 @@ func (m *Manager) ChatPresence(ctx context.Context, account, to, state string) e
 
 // MarkRead marks messages as read in a chat.
 func (m *Manager) MarkRead(ctx context.Context, account, chat, sender string, ids []string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -959,7 +1197,7 @@ func (m *Manager) MarkRead(ctx context.Context, account, chat, sender string, id
 
 // prep resolves the client + JID and loads media bytes in one shot.
 func (m *Manager) prep(ctx context.Context, account, to, data string) (*whatsmeow.Client, types.JID, []byte, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, types.JID{}, nil, err
 	}
@@ -994,7 +1232,7 @@ func (m *Manager) GroupParticipants(ctx context.Context, account, groupJID strin
 
 // FetchProfile returns basic user info for a number.
 func (m *Manager) FetchProfile(ctx context.Context, account, number string) (map[types.JID]types.UserInfo, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -1007,7 +1245,7 @@ func (m *Manager) FetchProfile(ctx context.Context, account, number string) (map
 
 // FetchBusinessProfile returns a number's WhatsApp Business profile.
 func (m *Manager) FetchBusinessProfile(ctx context.Context, account, number string) (*types.BusinessProfile, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -1020,7 +1258,7 @@ func (m *Manager) FetchBusinessProfile(ctx context.Context, account, number stri
 
 // ProfilePictureURL returns a contact's profile picture URL.
 func (m *Manager) ProfilePictureURL(ctx context.Context, account, number string) (string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return "", err
 	}
@@ -1040,7 +1278,7 @@ func (m *Manager) ProfilePictureURL(ctx context.Context, account, number string)
 
 // GetPrivacy returns the account's privacy settings.
 func (m *Manager) GetPrivacy(ctx context.Context, account string) (types.PrivacySettings, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return types.PrivacySettings{}, err
 	}
@@ -1049,7 +1287,7 @@ func (m *Manager) GetPrivacy(ctx context.Context, account string) (types.Privacy
 
 // UpdateProfileStatus sets the account's "about" text.
 func (m *Manager) UpdateProfileStatus(ctx context.Context, account, status string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -1058,7 +1296,7 @@ func (m *Manager) UpdateProfileStatus(ctx context.Context, account, status strin
 
 // BlockContact blocks or unblocks a number.
 func (m *Manager) BlockContact(ctx context.Context, account, number, action string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -1081,7 +1319,7 @@ func (m *Manager) BlockContact(ctx context.Context, account, number, action stri
 
 // InstanceState reports connection/login state of an account.
 func (m *Manager) InstanceState(ctx context.Context, account string) (map[string]any, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -1094,7 +1332,7 @@ func (m *Manager) InstanceState(ctx context.Context, account string) (map[string
 
 // Logout unlinks the account's device.
 func (m *Manager) Logout(ctx context.Context, account string) error {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -1152,7 +1390,7 @@ const maxMediaBytes = 20 << 20 // 20 MiB
 // at receive/send time. Returns the bytes, mime type and a suggested filename.
 // Only messages stored after media support was enabled carry the proto.
 func (m *Manager) DownloadMedia(ctx context.Context, account, msgID string) ([]byte, string, string, error) {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -1282,7 +1520,7 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	if !needGroup && !needNewsletter && !needOther {
 		return
 	}
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return // not connected: leave names empty rather than error the listing
 	}

@@ -37,6 +37,9 @@ type ingestItem struct {
 	account string
 	msg     appstore.Message
 	push    *InboundEvent // inbound webhook event, sent only after the message is stored
+	// placeholder marks a row that must not overwrite an existing message: the
+	// decrypted version may already have been stored (see SavePlaceholder).
+	placeholder bool
 }
 
 // startIngest launches the single writer that drains received messages into the
@@ -67,8 +70,17 @@ func (m *Manager) startIngest(ctx context.Context) {
 // the queue is full the message is dropped, so a database problem costs stored
 // history instead of freezing reception.
 func (m *Manager) enqueueMessage(account string, msg appstore.Message, push *InboundEvent) {
+	m.enqueue(ingestItem{account: account, msg: msg, push: push})
+}
+
+// enqueuePlaceholder queues a message that must not overwrite one already stored.
+func (m *Manager) enqueuePlaceholder(account string, msg appstore.Message) {
+	m.enqueue(ingestItem{account: account, msg: msg, placeholder: true})
+}
+
+func (m *Manager) enqueue(it ingestItem) {
 	select {
-	case m.ingest <- ingestItem{account: account, msg: msg, push: push}:
+	case m.ingest <- it:
 	default:
 		n := m.ingestDropped.Add(1)
 		m.warnThrottled(&m.ingestDropLog, "message ingest queue full; %d message(s) dropped so far", n)
@@ -80,7 +92,11 @@ func (m *Manager) enqueueMessage(account string, msg appstore.Message, push *Inb
 func (m *Manager) writeMessage(it ingestItem) {
 	ctx, cancel := context.WithTimeout(context.Background(), ingestWriteTimeout)
 	defer cancel()
-	if err := m.store.SaveMessage(ctx, it.account, it.msg); err != nil {
+	save := m.store.SaveMessage
+	if it.placeholder {
+		save = m.store.SavePlaceholder
+	}
+	if err := save(ctx, it.account, it.msg); err != nil {
 		n := m.ingestFailed.Add(1)
 		m.warnThrottled(&m.ingestFailLog, "storing received messages is failing (%d so far), last error: %v", n, err)
 	}

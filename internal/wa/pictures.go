@@ -45,7 +45,7 @@ func newPictureCache() *pictureCache {
 // waits up to wait for them; JIDs still loading are simply left out.
 func (m *Manager) ProfilePictures(ctx context.Context, account string, jids []string, wait time.Duration) map[string]string {
 	out := map[string]string{}
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil || len(jids) == 0 {
 		return out
 	}
