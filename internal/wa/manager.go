@@ -47,7 +47,8 @@ type Manager struct {
 	// way to tell an improvement from a quiet afternoon.
 	connects           atomic.Uint64
 	disconnects        atomic.Uint64
-	perAccountConnects map[string]int // guarded by mu
+	perAccountConnects map[string]int       // guarded by mu
+	loggedOut          map[string]time.Time // account -> when WhatsApp unlinked it; guarded by mu
 
 	// Received messages are stored by a single writer goroutine instead of by
 	// the whatsmeow event handler; see ingest.go for why.
@@ -98,6 +99,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		log:                 logger,
 		clients:             map[string]*whatsmeow.Client{},
 		perAccountConnects:  map[string]int{},
+		loggedOut:           map[string]time.Time{},
 		flows:               map[string]*PairFlow{},
 		outboxKick:          make(chan struct{}, 1),
 		pictures:            newPictureCache(),
@@ -306,8 +308,16 @@ func (m *Manager) clientFor(ctx context.Context, account string) (*whatsmeow.Cli
 		account = m.def
 	}
 	cli := m.clients[account]
+	loggedOutAt, wasLoggedOut := m.loggedOut[account]
 	m.mu.RUnlock()
 	if cli == nil {
+		// Distinguish "never paired" from "was paired until WhatsApp unlinked
+		// it": the second needs a re-pair, and saying "pair one first" for an
+		// account the user believes is connected hides that.
+		if wasLoggedOut {
+			return nil, fmt.Errorf("WhatsApp account %q was logged out (device removed) at %s — re-pair it to continue",
+				account, loggedOutAt.UTC().Format(time.RFC3339))
+		}
 		return nil, fmt.Errorf("no connected WhatsApp account %q — pair one first", account)
 	}
 	if cli.IsConnected() && cli.IsLoggedIn() {
@@ -329,12 +339,25 @@ func (m *Manager) clientFor(ctx context.Context, account string) (*whatsmeow.Cli
 	return cli, nil
 }
 
+// Account states reported by /healthz. The distinction that matters is the last
+// one: connected and reconnecting both resolve on their own, needs_repair never
+// does — it waits for a human to scan a QR.
+const (
+	AccountConnected    = "connected"
+	AccountReconnecting = "reconnecting"
+	AccountNeedsRepair  = "needs_repair"
+)
+
 // AccountHealth is a per-account connection snapshot for /healthz.
 type AccountHealth struct {
 	Account    string `json:"account"`
+	State      string `json:"state"`
 	Connected  bool   `json:"connected"`
 	LoggedIn   bool   `json:"logged_in"`
 	Reconnects int    `json:"reconnects"`
+	// LoggedOutAt is set only for needs_repair, so a dashboard can show how long
+	// the account has been down.
+	LoggedOutAt string `json:"logged_out_at,omitempty"`
 }
 
 // Health reports socket state per account plus churn counters since boot. This
@@ -343,13 +366,29 @@ type AccountHealth struct {
 func (m *Manager) Health() (accounts []AccountHealth, connects, disconnects uint64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	accounts = make([]AccountHealth, 0, len(m.clients)) // never nil: renders as [] not null
+	accounts = make([]AccountHealth, 0, len(m.clients)+len(m.loggedOut)) // never nil: renders as [] not null
 	for key, cli := range m.clients {
+		connected, loggedIn := cli.IsConnected(), cli.IsLoggedIn()
+		state := AccountReconnecting
+		if connected && loggedIn {
+			state = AccountConnected
+		}
 		accounts = append(accounts, AccountHealth{
 			Account:    key,
-			Connected:  cli.IsConnected(),
-			LoggedIn:   cli.IsLoggedIn(),
+			State:      state,
+			Connected:  connected,
+			LoggedIn:   loggedIn,
 			Reconnects: m.perAccountConnects[key],
+		})
+	}
+	// Logged-out accounts have no client left, so without this they would simply
+	// vanish from the listing and look like they were never paired.
+	for key, at := range m.loggedOut {
+		accounts = append(accounts, AccountHealth{
+			Account:     key,
+			State:       AccountNeedsRepair,
+			Reconnects:  m.perAccountConnects[key],
+			LoggedOutAt: at.UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Account < accounts[j].Account })
@@ -423,14 +462,21 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			key := accountKey(cli.Store.ID)
 			m.mu.Lock()
 			delete(m.clients, key)
+			m.loggedOut[key] = time.Now()
 			m.mu.Unlock()
-			m.log.Warnf("account %s logged out", key)
+			// Not a reconnect: WhatsApp removed the linked device, so the
+			// session is gone and no amount of waiting brings it back. Kept in
+			// loggedOut so /healthz can say "needs_repair" instead of dropping
+			// the account from the listing entirely — which is how one account
+			// sat dead for hours with nobody noticing.
+			m.log.Errorf("account %s was logged out (device removed) — needs re-pairing, reason: %v", key, v.Reason)
 		case *events.Connected:
 			key := accountKey(cli.Store.ID)
 			n := m.connects.Add(1)
 			m.mu.Lock()
 			m.perAccountConnects[key]++
 			per := m.perAccountConnects[key]
+			delete(m.loggedOut, key) // re-paired: no longer needs human action
 			m.mu.Unlock()
 			// Counted so a fix can be proved rather than felt: the socket churns
 			// on its own (measured ~75 reconnects/day over 6 accounts) and the

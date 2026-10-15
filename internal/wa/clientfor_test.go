@@ -54,3 +54,47 @@ func TestLookupClientNeverBlocks(t *testing.T) {
 		t.Fatalf("lookupClient must not wait, took %s", took)
 	}
 }
+
+// An account WhatsApp unlinked cannot recover on its own: waiting out the
+// reconnect grace would stall every call for 20s on something only a human can
+// fix, and "pair one first" would be misleading for an account the user thinks
+// is live.
+func TestClientForLoggedOutAccountFailsFastAndSaysSo(t *testing.T) {
+	m := &Manager{
+		clients:   map[string]*whatsmeow.Client{},
+		loggedOut: map[string]time.Time{"5511998362963": time.Now()},
+		log:       waLog.Noop,
+	}
+	start := time.Now()
+	_, err := m.clientFor(context.Background(), "5511998362963")
+	if err == nil {
+		t.Fatal("want an error for a logged-out account")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("must not wait out the reconnect grace, took %s", took)
+	}
+	if !strings.Contains(err.Error(), "re-pair") {
+		t.Fatalf("error must say the account needs re-pairing, got %q", err)
+	}
+}
+
+// A logged-out account keeps no client, so it must still be reported — else it
+// disappears from /healthz and looks like it was never paired.
+func TestHealthReportsLoggedOutAccountAsNeedsRepair(t *testing.T) {
+	m := &Manager{
+		clients:            map[string]*whatsmeow.Client{},
+		perAccountConnects: map[string]int{},
+		loggedOut:          map[string]time.Time{"5511998362963": time.Now()},
+		log:                waLog.Noop,
+	}
+	accounts, _, _ := m.Health()
+	if len(accounts) != 1 {
+		t.Fatalf("logged-out account must still be listed, got %+v", accounts)
+	}
+	if accounts[0].State != AccountNeedsRepair {
+		t.Fatalf("want state %q, got %q", AccountNeedsRepair, accounts[0].State)
+	}
+	if accounts[0].LoggedOutAt == "" {
+		t.Fatal("want the logout timestamp so a dashboard can show how long it has been down")
+	}
+}
