@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -132,12 +133,16 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 		}
 		issueAndWrite(r.Context(), w, h.store, ac.ClientID, ac.Sub, ac.Resource, ac.Scopes)
 	case "refresh_token":
-		rec, ok := h.store.TakeRefresh(r.Context(), r.Form.Get("refresh_token"))
-		if !ok {
-			tokenErr(w, "invalid_grant")
+		toks, err := h.store.RotateRefresh(r.Context(), r.Form.Get("refresh_token"))
+		if err != nil {
+			if errors.Is(err, ErrInvalidGrant) {
+				tokenErr(w, "invalid_grant")
+			} else {
+				tokenErr(w, "server_error")
+			}
 			return
 		}
-		issueAndWrite(r.Context(), w, h.store, rec.ClientID, rec.Sub, rec.Resource, rec.Scopes)
+		writeTokens(w, toks)
 	default:
 		tokenErr(w, "unsupported_grant_type")
 	}
@@ -270,6 +275,10 @@ func issueAndWrite(ctx context.Context, w http.ResponseWriter, s *Store, clientI
 		tokenErr(w, "server_error")
 		return
 	}
+	writeTokens(w, toks)
+}
+
+func writeTokens(w http.ResponseWriter, toks *Tokens) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  toks.AccessToken,
 		"token_type":    "Bearer",
