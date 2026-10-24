@@ -122,6 +122,18 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			return done(newMessagesView(ref, msgs, mgr.SenderNames(ctx, a, msgs), len(msgs) == clamp(in.Limit, 50, 500)), nil)
 		})
 
+	mcp.AddTool(s, withUI(&mcp.Tool{
+		Name: "whatsapp_sync_chat_history",
+		Description: "Request older message history for a specific chat from the primary WhatsApp phone (on-demand history sync, up to 50 messages preceding the oldest stored message in that chat). After calling this, wait a few seconds and call whatsapp_find_messages again.",
+	}), func(ctx context.Context, _ *mcp.CallToolRequest, in syncChatHistoryArgs) (*mcp.CallToolResult, any, error) {
+		a := acct(ctx)
+		n, err := mgr.RequestHistorySync(ctx, a, in.RemoteJID, in.Count)
+		if err != nil {
+			return done(nil, err)
+		}
+		return done(newReceiptView("Histórico solicitado ao celular", plural(n, "mensagem anterior", "mensagens anteriores"), mgr.ChatName(ctx, a, in.RemoteJID), nil), nil)
+	})
+
 	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_download_media", Description: "Download the media of a stored message (image, audio/voice note, video, document, or sticker) by its message id (from find_messages). Returns base64 data plus mimetype and a suggested filename. Only messages received or sent after media support was enabled carry downloadable media."}),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in downloadMediaArgs) (*mcp.CallToolResult, any, error) {
 			data, mime, name, err := mgr.DownloadMedia(ctx, acct(ctx), in.ID)
@@ -686,6 +698,11 @@ type listChatsArgs struct {
 type listMessagesArgs struct {
 	RemoteJID string `json:"remoteJid"`
 	Limit     int    `json:"limit,omitempty"`
+}
+
+type syncChatHistoryArgs struct {
+	RemoteJID string `json:"remoteJid" jsonschema:"Chat JID or phone number to fetch older history for"`
+	Count     int    `json:"count,omitempty" jsonschema:"Number of older messages to request from the phone (default 50, max 50)"`
 }
 
 type downloadMediaArgs struct {

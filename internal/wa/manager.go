@@ -58,6 +58,15 @@ type Manager struct {
 	ingestDropLog atomic.Int64
 	ingestFailLog atomic.Int64
 
+	// HistorySync blobs are processed by a separate background worker with a
+	// bounded queue (see history.go); WA_HISTORY_SYNC=off disables it at boot.
+	historySyncOff bool
+	history        chan historyJob
+	historyDropped atomic.Uint64
+	historyFailed  atomic.Uint64
+	historyDropLog atomic.Int64
+	historyFailLog atomic.Int64
+
 	// Display-name caches. Both refresh under a single flight; see names_cache.go
 	// for why a burst of concurrent refreshes is dangerous.
 	// Inbound webhook (optional; see webhook.go).
@@ -84,6 +93,11 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		// instead of our Os string. CHROME mirrors what Baileys/Evolution do.
 		store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
 	}
+	historyOff := isHistorySyncDisabled(os.Getenv("WA_HISTORY_SYNC"))
+	if !historyOff && store.DeviceProps.HistorySyncConfig != nil {
+		store.DeviceProps.HistorySyncConfig.OnDemandReady = proto.Bool(true)
+		store.DeviceProps.HistorySyncConfig.CompleteOnDemandReady = proto.Bool(true)
+	}
 
 	dialect := "sqlite3" // dbutil dialect for a modernc "sqlite" *sql.DB
 	if isPG {
@@ -104,12 +118,16 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		perAccountConnects:  map[string]int{},
 		loggedOut:           map[string]time.Time{},
 		flows:               map[string]*PairFlow{},
+		historySyncOff:      historyOff,
 		outboxKick:          make(chan struct{}, 1),
 		pictures:            newPictureCache(),
 		groupNameCache:      newNamesCache(groupNameTTL, logSlowRefresh(logger, "joined groups")),
 		newsletterNameCache: newNamesCache(groupNameTTL, logSlowRefresh(logger, "newsletters")),
 	}
 	m.startIngest(ctx)
+	if !m.historySyncOff {
+		m.startHistorySync(ctx)
+	}
 	return m, nil
 }
 
@@ -594,6 +612,8 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 				TS:        v.Info.Timestamp.UnixMilli(),
 				Body:      undecryptableBody,
 			}) // no webhook push: there is no content to deliver yet
+		case *events.HistorySync:
+			m.enqueueHistorySync(accountKey(cli.Store.ID), cli, v.Data)
 		case *events.LoggedOut:
 			key := accountKey(cli.Store.ID)
 			at := time.Now()
