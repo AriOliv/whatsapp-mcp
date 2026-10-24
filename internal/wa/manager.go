@@ -953,25 +953,23 @@ func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Cont
 	if err != nil {
 		return nil, err
 	}
-	if m.container != nil && m.container.LIDMap != nil {
-		_ = m.container.LIDMap.FillCache(ctx)
-	}
 	raw, err := cli.Store.Contacts.GetAllContacts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]Contact, len(raw))
 	for jid, c := range raw {
+		alt := alternateJID(ctx, cli, jid)
 		num := ""
 		switch jid.Server {
 		case types.DefaultUserServer:
 			num = jid.User
 		case types.HiddenUserServer:
-			if alt := alternateJID(ctx, cli, jid); !alt.IsEmpty() {
+			if !alt.IsEmpty() {
 				num = alt.User
 			}
 		}
-		if alt := alternateJID(ctx, cli, jid); !alt.IsEmpty() {
+		if !alt.IsEmpty() {
 			if altInfo, ok := raw[alt]; ok {
 				c = mergeContactInfo(c, altInfo)
 			}
@@ -1731,6 +1729,11 @@ func bestContactName(c types.ContactInfo) string {
 // alternateJID returns the counterpart JID (@lid -> @s.whatsapp.net or
 // @s.whatsapp.net -> @lid) using whatsmeow's LIDStore API, or EmptyJID when
 // unknown.
+//
+// Note: whatsmeow's LID map is process-global (keyed by LID alone, not per
+// account), since a WhatsApp LID<->PN mapping is a global identity property.
+// Tenant isolation is enforced by scoping all chat, message, and contact reads
+// by account_jid / device store.
 func alternateJID(ctx context.Context, cli *whatsmeow.Client, jid types.JID) types.JID {
 	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
 		return types.EmptyJID
