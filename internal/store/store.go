@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -170,6 +171,16 @@ func (s *Store) Init(ctx context.Context) error {
 			PRIMARY KEY (account_jid, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(account_jid, chat_jid, ts)`,
+		// Accounts WhatsApp unlinked. whatsmeow deletes the device from its own
+		// store on logout, so after a restart there is nothing left to say the
+		// account ever existed — it just disappears from /healthz. Persisting it
+		// here is what lets a dashboard keep reporting needs_repair until a human
+		// actually re-pairs.
+		`CREATE TABLE IF NOT EXISTS logged_out_accounts (
+			account_jid   TEXT PRIMARY KEY,
+			logged_out_at BIGINT NOT NULL,
+			reason        TEXT
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -254,6 +265,112 @@ func (s *Store) SaveMessage(ctx context.Context, account string, m Message) erro
 		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
 	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
 	return err
+}
+
+// SavePlaceholder stores a message only if we have never seen that ID. Used for
+// messages that failed to decrypt: whatsmeow asks the sender to resend, and the
+// real message may land either before or after this call. Plain SaveMessage
+// upserts the body, so a late placeholder would overwrite the decrypted text —
+// this one leaves an existing row untouched.
+func (s *Store) SavePlaceholder(ctx context.Context, account string, m Message) error {
+	up := `INSERT INTO messages (account_jid,id,chat_jid,sender_jid,from_me,ts,body,media_type,media)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (account_jid,id) DO NOTHING`
+	if _, err := s.db.ExecContext(ctx, s.reb(up),
+		account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType, m.MediaProto); err != nil {
+		return err
+	}
+	ch := `INSERT INTO chats (account_jid,jid,last_ts) VALUES (?,?,?)
+		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
+	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
+	return err
+}
+
+// MarkLoggedOut records that WhatsApp unlinked an account, so it survives the
+// restart that wipes the in-memory flag (and the whatsmeow device row).
+func (s *Store) MarkLoggedOut(ctx context.Context, account, reason string, at time.Time) error {
+	q := `INSERT INTO logged_out_accounts (account_jid, logged_out_at, reason) VALUES (?,?,?)
+		ON CONFLICT (account_jid) DO UPDATE SET logged_out_at=excluded.logged_out_at, reason=excluded.reason`
+	_, err := s.db.ExecContext(ctx, s.reb(q), account, at.UnixMilli(), reason)
+	return err
+}
+
+// ClearLoggedOut drops the marker once the account is paired again.
+func (s *Store) ClearLoggedOut(ctx context.Context, account string) error {
+	_, err := s.db.ExecContext(ctx, s.reb(`DELETE FROM logged_out_accounts WHERE account_jid=?`), account)
+	return err
+}
+
+// LoggedOutAccounts returns every account still awaiting a re-pair.
+func (s *Store) LoggedOutAccounts(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_jid, logged_out_at FROM logged_out_accounts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var acct string
+		var ms int64
+		if err := rows.Scan(&acct, &ms); err != nil {
+			return nil, err
+		}
+		out[acct] = time.UnixMilli(ms)
+	}
+	return out, rows.Err()
+}
+
+// BackfillLoggedOut marks accounts that still hold a valid OAuth refresh token
+// but no longer have a whatsmeow device, recording them as unlinked at `at`.
+//
+// It exists for accounts WhatsApp unlinked *before* this table existed:
+// whatsmeow had already deleted the device row, so nothing else remembers them
+// and /healthz would report needs_repair: 0 while the account is in fact dead.
+// Having paired is what the surviving refresh token proves. Rows already
+// present are left alone, so a real logout timestamp is never overwritten by
+// this estimate. Returns the accounts it marked.
+func (s *Store) BackfillLoggedOut(ctx context.Context, liveAccounts []string, at time.Time) ([]string, error) {
+	live := map[string]bool{}
+	for _, a := range liveAccounts {
+		live[a] = true
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT sub FROM oauth_refresh_tokens WHERE sub IS NOT NULL AND sub <> ''`)
+	if err != nil {
+		// No OAuth table (stdio mode): nothing to backfill, not an error.
+		return nil, nil
+	}
+	var subs []string
+	for rows.Next() {
+		var sub string
+		if err := rows.Scan(&sub); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var marked []string
+	for _, sub := range subs {
+		if live[sub] {
+			continue
+		}
+		q := `INSERT INTO logged_out_accounts (account_jid, logged_out_at, reason) VALUES (?,?,?)
+			ON CONFLICT (account_jid) DO NOTHING`
+		res, err := s.db.ExecContext(ctx, s.reb(q), sub, at.UnixMilli(), "detected at startup: token without device")
+		if err != nil {
+			return marked, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			marked = append(marked, sub)
+		}
+	}
+	sort.Strings(marked)
+	return marked, nil
 }
 
 // GetMedia returns the stored media proto (and media_type) for a message by ID.

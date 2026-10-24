@@ -56,7 +56,7 @@ func (f *PairFlow) RequestPhoneCode(ctx context.Context, number string) (string,
 // goroutine drives the QR channel until success/timeout/error.
 func (m *Manager) StartFlow(flowID string) (*PairFlow, error) {
 	dev := m.container.NewDevice()
-	cli := whatsmeow.NewClient(dev, m.log)
+	cli := m.newClient(dev)
 	ctx, cancel := context.WithCancel(context.Background())
 	qrChan, err := cli.GetQRChannel(ctx)
 	if err != nil {

@@ -14,8 +14,8 @@ import (
 
 // SelfJID returns the account's own JID (zero value when not connected).
 func (m *Manager) SelfJID(account string) types.JID {
-	cli, err := m.clientFor(account)
-	if err != nil || cli.Store.ID == nil {
+	cli := m.lookupClient(account)
+	if cli == nil || cli.Store.ID == nil {
 		return types.JID{}
 	}
 	return *cli.Store.ID
@@ -38,7 +38,7 @@ func (m *Manager) ChatPreviews(ctx context.Context, account string, jids []strin
 // (group threads show who wrote each line). Contacts are read one by one, but
 // only for the handful of distinct senders in the page.
 func (m *Manager) SenderNames(ctx context.Context, account string, msgs []appstore.Message) map[string]string {
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return map[string]string{}
 	}
@@ -161,8 +161,8 @@ func DisplayName(c Contact) string {
 
 // PushName is the account's own display name (empty when not connected).
 func (m *Manager) PushName(account string) string {
-	cli, err := m.clientFor(account)
-	if err != nil {
+	cli := m.lookupClient(account)
+	if cli == nil {
 		return ""
 	}
 	return cli.Store.PushName
@@ -183,7 +183,7 @@ type ProfileCardView struct {
 // for one number, so the UI can show a complete contact card from one tool call.
 func (m *Manager) ProfileCard(ctx context.Context, account, number string, info map[types.JID]types.UserInfo) ProfileCardView {
 	out := ProfileCardView{Kind: "contact"}
-	cli, err := m.clientFor(account)
+	cli, err := m.clientFor(ctx, account)
 	if err != nil {
 		return out
 	}
