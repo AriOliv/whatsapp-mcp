@@ -381,6 +381,9 @@ func (s *Store) BackfillLoggedOut(ctx context.Context, liveAccounts []string, at
 // GetMedia returns the stored media proto (and media_type) for a message by ID.
 // A nil/empty result means the message has no downloadable media stored.
 func (s *Store) GetMedia(ctx context.Context, account, msgID string) ([]byte, string, error) {
+	if account == "" || msgID == "" {
+		return nil, "", nil
+	}
 	var (
 		media []byte
 		mtype sql.NullString

@@ -528,20 +528,32 @@ func (m *Manager) HasDevice(sub string) bool {
 // replaced by the real text if the sender honours the retry receipt.
 const undecryptableBody = "[mensagem não decifrada — aguardando reenvio do remetente]"
 
+// viewOnceBody records that a ViewOnce message existed without persisting its
+// caption or media keys in the database.
+const viewOnceBody = "[visualização única]"
+
 // handler persists incoming messages into our store and reacts to lifecycle.
 func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 	return func(evt any) {
 		switch v := evt.(type) {
 		case *events.Message:
 			acct := accountKey(cli.Store.ID)
-			body := messageText(v.Message)
-			mt := mediaType(v.Message)
-			// Persist the message proto for media so it can be downloaded later
-			// (it carries MediaKey/DirectPath/URL — the raw bytes stay on the CDN).
-			var mediaRaw []byte
-			if mt != "" {
-				if b, err := proto.Marshal(v.Message); err == nil {
-					mediaRaw = b
+			var (
+				body     string
+				mt       string
+				mediaRaw []byte
+			)
+			if v.IsViewOnce || isViewOnceMessage(v.RawMessage) || isViewOnceMessage(v.Message) {
+				body = viewOnceBody
+				mt = "view_once"
+			} else {
+				body = messageText(v.Message)
+				mt = mediaType(v.Message)
+				// Persist only the stripped media metadata/keys (MediaKey,
+				// DirectPath, SHA256, mime, filename — never thumbnail or file
+				// bytes) so DownloadMedia can fetch from WhatsApp's CDN on demand.
+				if mt != "" {
+					mediaRaw, _ = slimMediaProto(v.Message)
 				}
 			}
 			var chatName string
@@ -906,7 +918,40 @@ func (m *Manager) SendMedia(ctx context.Context, account, to, kind, data, captio
 	if err != nil {
 		return "", err
 	}
+	m.recordOutboundMedia(cli, jid, resp, msg, orDefault(caption, fileName), kind)
 	return resp.ID, nil
+}
+
+// recordOutboundMedia persists the upload metadata/keys already returned by
+// cli.Upload on an outbound media send so whatsapp_download_media works for
+// sent media without re-downloading or storing file bytes in Postgres.
+func (m *Manager) recordOutboundMedia(cli *whatsmeow.Client, chatJID types.JID, resp whatsmeow.SendResponse, msg *waE2E.Message, body, kind string) {
+	if m.ingest == nil || cli == nil || cli.Store == nil {
+		return
+	}
+	acct := accountKey(cli.Store.ID)
+	if acct == "" {
+		return
+	}
+	sender := ""
+	if cli.Store.ID != nil {
+		sender = cli.Store.ID.String()
+	}
+	ts := resp.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	mediaRaw, _ := slimMediaProto(msg)
+	m.enqueueMessage(acct, appstore.Message{
+		ID:         resp.ID,
+		ChatJID:    chatJID.String(),
+		SenderJID:  sender,
+		FromMe:     true,
+		TS:         ts.UnixMilli(),
+		Body:       body,
+		MediaType:  kind,
+		MediaProto: mediaRaw,
+	}, nil)
 }
 
 // React reacts to a message (empty emoji removes the reaction).
@@ -1121,6 +1166,7 @@ func (m *Manager) SendSticker(ctx context.Context, account, to, data string) (st
 	if err != nil {
 		return "", err
 	}
+	m.recordOutboundMedia(cli, jid, resp, msg, "", "sticker")
 	return resp.ID, nil
 }
 
@@ -1540,6 +1586,10 @@ func (m *Manager) DownloadMedia(ctx context.Context, account, msgID string) ([]b
 // mediaPart returns the downloadable media part of a message plus its mime type
 // and a suggested filename (msgID + extension derived from the mime type).
 func mediaPart(msg *waE2E.Message, msgID string) (whatsmeow.DownloadableMessage, string, string) {
+	if isViewOnceMessage(msg) {
+		return nil, "", ""
+	}
+	msg = unwrapMessage(msg)
 	switch {
 	case msg.GetImageMessage() != nil:
 		p := msg.GetImageMessage()
@@ -1825,10 +1875,152 @@ func (m *Manager) newsletterNames(ctx context.Context, account string, cli *what
 
 // ---- small helpers -------------------------------------------------------
 
+// isViewOnceMessage reports whether m is wrapped in any ViewOnce container.
+func isViewOnceMessage(m *waE2E.Message) bool {
+	for depth := 0; depth < 8 && m != nil; depth++ {
+		if m.GetViewOnceMessage().GetMessage() != nil ||
+			m.GetViewOnceMessageV2().GetMessage() != nil ||
+			m.GetViewOnceMessageV2Extension().GetMessage() != nil {
+			return true
+		}
+		switch {
+		case m.GetDeviceSentMessage().GetMessage() != nil:
+			m = m.GetDeviceSentMessage().GetMessage()
+		case m.GetBotInvokeMessage().GetMessage() != nil:
+			m = m.GetBotInvokeMessage().GetMessage()
+		case m.GetEphemeralMessage().GetMessage() != nil:
+			m = m.GetEphemeralMessage().GetMessage()
+		case m.GetLottieStickerMessage().GetMessage() != nil:
+			m = m.GetLottieStickerMessage().GetMessage()
+		case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			m = m.GetDocumentWithCaptionMessage().GetMessage()
+		case m.GetEditedMessage().GetMessage() != nil:
+			m = m.GetEditedMessage().GetMessage()
+		case m.GetProtocolMessage().GetEditedMessage() != nil:
+			m = m.GetProtocolMessage().GetEditedMessage()
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// unwrapMessage peels off non-ViewOnce container wrappers (DeviceSentMessage,
+// EphemeralMessage, DocumentWithCaptionMessage, EditedMessage, etc.) so media
+// and text helpers see the inner payload. ViewOnce containers are deliberately
+// NOT unwrapped so their content/keys are never persisted.
+func unwrapMessage(m *waE2E.Message) *waE2E.Message {
+	for depth := 0; depth < 8 && m != nil; depth++ {
+		if m.GetViewOnceMessage().GetMessage() != nil ||
+			m.GetViewOnceMessageV2().GetMessage() != nil ||
+			m.GetViewOnceMessageV2Extension().GetMessage() != nil {
+			return m
+		}
+		switch {
+		case m.GetDeviceSentMessage().GetMessage() != nil:
+			m = m.GetDeviceSentMessage().GetMessage()
+		case m.GetBotInvokeMessage().GetMessage() != nil:
+			m = m.GetBotInvokeMessage().GetMessage()
+		case m.GetEphemeralMessage().GetMessage() != nil:
+			m = m.GetEphemeralMessage().GetMessage()
+		case m.GetLottieStickerMessage().GetMessage() != nil:
+			m = m.GetLottieStickerMessage().GetMessage()
+		case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			m = m.GetDocumentWithCaptionMessage().GetMessage()
+		case m.GetEditedMessage().GetMessage() != nil:
+			m = m.GetEditedMessage().GetMessage()
+		case m.GetProtocolMessage().GetEditedMessage() != nil:
+			m = m.GetProtocolMessage().GetEditedMessage()
+		default:
+			return m
+		}
+	}
+	return m
+}
+
+// slimMediaProto builds a minimal serialized waE2E.Message containing only the
+// CDN pointers and cryptographic keys needed by whatsmeow.Client.Download
+// (DirectPath, URL, MediaKey, FileSHA256, FileEncSHA256, FileLength, Mimetype,
+// FileName), stripping JPEGThumbnail, ContextInfo, Waveform, and sidecars so no
+// media or thumbnail bytes are stored in Postgres. Returns nil for ViewOnce.
+func slimMediaProto(m *waE2E.Message) ([]byte, error) {
+	if m == nil || isViewOnceMessage(m) {
+		return nil, nil
+	}
+	m = unwrapMessage(m)
+	var slim waE2E.Message
+	switch {
+	case m.GetImageMessage() != nil:
+		src := m.GetImageMessage()
+		slim.ImageMessage = &waE2E.ImageMessage{
+			URL:           src.URL,
+			DirectPath:    src.DirectPath,
+			MediaKey:      src.MediaKey,
+			FileSHA256:    src.FileSHA256,
+			FileEncSHA256: src.FileEncSHA256,
+			FileLength:    src.FileLength,
+			Mimetype:      src.Mimetype,
+		}
+	case m.GetVideoMessage() != nil:
+		src := m.GetVideoMessage()
+		slim.VideoMessage = &waE2E.VideoMessage{
+			URL:           src.URL,
+			DirectPath:    src.DirectPath,
+			MediaKey:      src.MediaKey,
+			FileSHA256:    src.FileSHA256,
+			FileEncSHA256: src.FileEncSHA256,
+			FileLength:    src.FileLength,
+			Mimetype:      src.Mimetype,
+		}
+	case m.GetAudioMessage() != nil:
+		src := m.GetAudioMessage()
+		slim.AudioMessage = &waE2E.AudioMessage{
+			URL:           src.URL,
+			DirectPath:    src.DirectPath,
+			MediaKey:      src.MediaKey,
+			FileSHA256:    src.FileSHA256,
+			FileEncSHA256: src.FileEncSHA256,
+			FileLength:    src.FileLength,
+			Mimetype:      src.Mimetype,
+			PTT:           src.PTT,
+		}
+	case m.GetDocumentMessage() != nil:
+		src := m.GetDocumentMessage()
+		slim.DocumentMessage = &waE2E.DocumentMessage{
+			URL:           src.URL,
+			DirectPath:    src.DirectPath,
+			MediaKey:      src.MediaKey,
+			FileSHA256:    src.FileSHA256,
+			FileEncSHA256: src.FileEncSHA256,
+			FileLength:    src.FileLength,
+			Mimetype:      src.Mimetype,
+			FileName:      src.FileName,
+		}
+	case m.GetStickerMessage() != nil:
+		src := m.GetStickerMessage()
+		slim.StickerMessage = &waE2E.StickerMessage{
+			URL:           src.URL,
+			DirectPath:    src.DirectPath,
+			MediaKey:      src.MediaKey,
+			FileSHA256:    src.FileSHA256,
+			FileEncSHA256: src.FileEncSHA256,
+			FileLength:    src.FileLength,
+			Mimetype:      src.Mimetype,
+		}
+	default:
+		return nil, nil
+	}
+	return proto.Marshal(&slim)
+}
+
 func messageText(m *waE2E.Message) string {
 	if m == nil {
 		return ""
 	}
+	if isViewOnceMessage(m) {
+		return viewOnceBody
+	}
+	m = unwrapMessage(m)
 	if m.Conversation != nil {
 		return m.GetConversation()
 	}
@@ -1841,6 +2033,15 @@ func messageText(m *waE2E.Message) string {
 	if vm := m.GetVideoMessage(); vm != nil {
 		return vm.GetCaption()
 	}
+	if dm := m.GetDocumentMessage(); dm != nil {
+		if s := dm.GetCaption(); s != "" {
+			return s
+		}
+		if s := dm.GetTitle(); s != "" {
+			return s
+		}
+		return dm.GetFileName()
+	}
 	if r := interactiveReply(m); r != nil {
 		return replyText(r)
 	}
@@ -1849,6 +2050,24 @@ func messageText(m *waE2E.Message) string {
 	}
 	if lm := m.GetListMessage(); lm != nil {
 		return lm.GetDescription()
+	}
+	if pm := m.GetPollCreationMessage(); pm != nil {
+		return pm.GetName()
+	}
+	if pm := m.GetPollCreationMessageV2(); pm != nil {
+		return pm.GetName()
+	}
+	if pm := m.GetPollCreationMessageV3(); pm != nil {
+		return pm.GetName()
+	}
+	if loc := m.GetLocationMessage(); loc != nil {
+		if loc.GetName() != "" {
+			return loc.GetName()
+		}
+		return loc.GetAddress()
+	}
+	if cm := m.GetContactMessage(); cm != nil {
+		return cm.GetDisplayName()
 	}
 	return ""
 }
@@ -1879,9 +2098,14 @@ func replyText(r *Reply) string {
 }
 
 func mediaType(m *waE2E.Message) string {
-	switch {
-	case m == nil:
+	if m == nil {
 		return ""
+	}
+	if isViewOnceMessage(m) {
+		return "view_once"
+	}
+	m = unwrapMessage(m)
+	switch {
 	case m.GetImageMessage() != nil:
 		return "image"
 	case m.GetVideoMessage() != nil:
