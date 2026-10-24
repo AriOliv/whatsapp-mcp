@@ -68,10 +68,22 @@ func (m *Manager) SenderNames(ctx context.Context, account string, msgs []appsto
 // ChatName resolves one chat's display name, preferring what is already
 // stored. Asking WhatsApp costs a fetch of every joined group, which is far too
 // much work to name a single conversation — so that path is only taken when the
-// database has nothing, and its result is remembered for next time.
+// database has nothing, and its result is remembered for next time. Returns ""
+// when the chat/contact is unknown.
 func (m *Manager) ChatName(ctx context.Context, account, jid string) string {
-	if name, err := m.store.ChatName(ctx, m.acct(account), jid); err == nil && name != "" {
-		return name
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return ""
+	}
+	if !strings.Contains(jid, "@") {
+		if r, err := resolveJID(jid); err == nil {
+			jid = r.String()
+		}
+	}
+	if m.store != nil {
+		if name, err := m.store.ChatName(ctx, m.acct(account), jid); err == nil && name != "" {
+			return name
+		}
 	}
 	chats := []appstore.Chat{{JID: jid}}
 	m.fillChatNames(ctx, account, chats)

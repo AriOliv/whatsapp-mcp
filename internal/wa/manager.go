@@ -130,6 +130,49 @@ func accountKey(jid *types.JID) string {
 	return jid.User
 }
 
+func deviceNum(dev *store.Device) uint16 {
+	if dev == nil || dev.ID == nil {
+		return 0
+	}
+	return dev.ID.Device
+}
+
+func clientDeviceNum(cli *whatsmeow.Client) uint16 {
+	if cli == nil {
+		return 0
+	}
+	return deviceNum(cli.Store)
+}
+
+// dedupeDevices collapses multiple whatsmeow_device rows for the same phone
+// number down to the newest companion device (highest JID Device ID), returning
+// the active slice and any superseded rows. Postgres returns GetAllDevices in
+// arbitrary heap order, so without this a stale row returned after the active
+// one would overwrite m.clients[key] and connect alongside it.
+func dedupeDevices(devices []*store.Device) (keep []*store.Device, stale []*store.Device) {
+	bestIdx := map[string]int{}
+	for _, dev := range devices {
+		key := accountKey(dev.ID)
+		if key == "" {
+			keep = append(keep, dev)
+			continue
+		}
+		idx, seen := bestIdx[key]
+		if !seen {
+			bestIdx[key] = len(keep)
+			keep = append(keep, dev)
+			continue
+		}
+		if deviceNum(dev) >= deviceNum(keep[idx]) {
+			stale = append(stale, keep[idx])
+			keep[idx] = dev
+		} else {
+			stale = append(stale, dev)
+		}
+	}
+	return keep, stale
+}
+
 // newClient builds a whatsmeow client with the connection settings this server
 // relies on. Every client must come from here: a device built elsewhere would
 // silently lose these, and the symptom (a message that never arrives) is
@@ -198,7 +241,11 @@ func (m *Manager) LoadAndConnect(ctx context.Context) (int, error) {
 		m.log.Warnf("%d account(s) have a token but no device — marking as needing re-pair: %v", len(marked), marked)
 	}
 	n := 0
-	for _, dev := range devices {
+	activeDevices, staleDevices := dedupeDevices(devices)
+	for _, s := range staleDevices {
+		m.log.Warnf("skipping superseded device %v for account %s", s.ID, accountKey(s.ID))
+	}
+	for _, dev := range activeDevices {
 		cli := m.newClient(dev)
 		m.register(cli)
 		if err := cli.Connect(); err != nil {
@@ -215,6 +262,12 @@ func (m *Manager) register(cli *whatsmeow.Client) {
 	key := accountKey(cli.Store.ID)
 	m.mu.Lock()
 	if key != "" {
+		if prev := m.clients[key]; prev != nil && prev != cli {
+			if (prev.IsConnected() && !cli.IsConnected()) || clientDeviceNum(prev) > clientDeviceNum(cli) {
+				m.mu.Unlock()
+				return
+			}
+		}
 		m.clients[key] = cli
 		if m.def == "" {
 			m.def = key
@@ -1597,8 +1650,10 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 			if err != nil {
 				continue
 			}
-			if info, err := cli.Store.Contacts.GetContact(ctx, jid); err == nil {
-				c.Name = bestContactName(info)
+			if cli.Store != nil && cli.Store.Contacts != nil {
+				if info, err := cli.Store.Contacts.GetContact(ctx, jid); err == nil {
+					c.Name = bestContactName(info)
+				}
 			}
 		}
 		if c.Name != "" {
