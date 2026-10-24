@@ -53,8 +53,15 @@ export function AccountCard({ data }: { data: AccountPayload }) {
 
 /* ---------------------------------------------------------------- sent -- */
 
-const SENT_LABEL: Record<SentPayload["what"], { title: string; icon: IconName }> = {
-  text: { title: "Mensagem enviada", icon: "send" },
+const DEFAULT_SENT: { title: string; icon: IconName } = { title: "Mensagem enviada", icon: "send" };
+
+const SENT_LABEL: Record<string, { title: string; icon: IconName }> = {
+  text: DEFAULT_SENT,
+  buttons: { title: "Botões enviados", icon: "send" },
+  list: { title: "Lista enviada", icon: "send" },
+  carousel: { title: "Carrossel enviado", icon: "send" },
+  form: { title: "Formulário enviado", icon: "send" },
+  flow: { title: "Flow enviado", icon: "send" },
   media: { title: "Mídia enviada", icon: "image" },
   audio: { title: "Áudio enviado", icon: "mic" },
   sticker: { title: "Figurinha enviada", icon: "sticker" },
@@ -67,7 +74,7 @@ const SENT_LABEL: Record<SentPayload["what"], { title: string; icon: IconName }>
 };
 
 export function SentCard({ data }: { data: SentPayload }) {
-  const meta = SENT_LABEL[data.what] ?? SENT_LABEL.text;
+  const meta = SENT_LABEL[data.what] ?? DEFAULT_SENT;
   const to = data.to_name || (data.to?.includes("@") ? data.to.split("@")[0] : data.to) || "";
   return (
     <div class="card">

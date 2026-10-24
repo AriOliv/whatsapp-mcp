@@ -3,26 +3,24 @@ package mcpserver
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// slowToolCall is how long a tool may take before it is worth a log line. Tool
+// slowToolCall is how long a tool may take before it is flagged as slow. Tool
 // calls compete with message reception for the same database, so one that drags
 // is the first sign of trouble.
 const slowToolCall = 5 * time.Second
 
-// logToolFailures records tool calls that fail or run long.
+// logToolCalls records a structured log line for every tools/call invocation:
+// tool name, masked account (never full phone numbers, payloads, or tokens),
+// duration, and status/error.
 //
 // A handler's error is returned to the client inside the result and never
-// reaches the server log, so a report of "the tools are erroring" leaves nothing
-// to investigate afterwards. This middleware closes that gap: it names the tool,
-// says how long it took, and reports both a transport-level error and the
-// in-result IsError that the SDK treats as a successful response.
-//
-// Arguments are deliberately not logged — they carry phone numbers and message
-// text.
+// reaches the server log on its own, so without this middleware a report of
+// "tools are failing" leaves nothing in the pod logs to diagnose.
 func logToolFailures(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		if method != "tools/call" {
@@ -32,20 +30,37 @@ func logToolFailures(next mcp.MethodHandler) mcp.MethodHandler {
 		if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil {
 			name = call.Params.Name
 		}
+		account := maskAccount(acct(ctx))
 		start := time.Now()
 		res, err := next(ctx, method, req)
-		took := time.Since(start)
+		took := time.Since(start).Round(time.Millisecond)
 
 		switch {
 		case err != nil:
-			log.Printf("tool %s failed after %s: %v", name, took, err)
+			log.Printf("tools/call tool=%s account=%s duration=%s status=error err=%q", name, account, took, err.Error())
 		case isErrorResult(res):
-			log.Printf("tool %s returned an error after %s: %s", name, took, resultText(res))
+			log.Printf("tools/call tool=%s account=%s duration=%s status=tool_error err=%q", name, account, took, resultText(res))
 		case took > slowToolCall:
-			log.Printf("tool %s took %s", name, took)
+			log.Printf("tools/call tool=%s account=%s duration=%s status=ok slow=true", name, account, took)
+		default:
+			log.Printf("tools/call tool=%s account=%s duration=%s status=ok", name, account, took)
 		}
 		return res, err
 	}
+}
+
+// maskAccount redacts the middle digits of an account phone number (e.g.
+// "5521967582535" -> "5521…2535") so logs can correlate per-account failures
+// without exposing full numbers.
+func maskAccount(a string) string {
+	a = strings.TrimSpace(a)
+	if a == "" {
+		return "default"
+	}
+	if len(a) <= 6 {
+		return "***"
+	}
+	return a[:4] + "…" + a[len(a)-4:]
 }
 
 func isErrorResult(res mcp.Result) bool {

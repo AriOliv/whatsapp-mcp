@@ -52,6 +52,20 @@ function applySafeArea(ctx: Partial<McpUiHostContext>): void {
 export const app = new App({ name: "whatsapp-mcp", version: "1.0.0" });
 
 /**
+ * Buffer the most recent `toolresult` notification synchronously at module load
+ * (before `app.connect()` starts), so `<App />` never misses a result delivered
+ * before Preact's asynchronous `useEffect` mounts.
+ */
+let latestToolResult: unknown = undefined;
+app.addEventListener("toolresult", (params) => {
+  latestToolResult = params;
+});
+
+export function getLatestToolResult(): unknown {
+  return latestToolResult;
+}
+
+/**
  * Tool payload: prefer `structuredContent`, fall back to parsing the JSON text
  * mirror (hosts/tools that predate structured output still send only text).
  */

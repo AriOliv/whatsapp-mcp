@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -96,5 +99,38 @@ func TestHealthReportsLoggedOutAccountAsNeedsRepair(t *testing.T) {
 	}
 	if accounts[0].LoggedOutAt == "" {
 		t.Fatal("want the logout timestamp so a dashboard can show how long it has been down")
+	}
+}
+
+func TestStaleCompanionLogoutDoesNotEvictActiveClient(t *testing.T) {
+	activeJID := types.NewADJID("5521967582535", 0, 37)
+	staleJID := types.NewADJID("5521967582535", 0, 35)
+	activeCli := &whatsmeow.Client{Store: &store.Device{ID: &activeJID}}
+	staleCli := &whatsmeow.Client{Store: &store.Device{ID: &staleJID}}
+
+	m := &Manager{
+		clients:            map[string]*whatsmeow.Client{"5521967582535": activeCli},
+		perAccountConnects: map[string]int{},
+		loggedOut:          map[string]time.Time{},
+		log:                waLog.Noop,
+	}
+
+	// Stale companion device fires LoggedOut -> must NOT remove activeCli or mark loggedOut.
+	m.handler(staleCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
+
+	if got := m.clients["5521967582535"]; got != activeCli {
+		t.Fatalf("active client was evicted by stale companion logout: got %v, want %v", got, activeCli)
+	}
+	if _, marked := m.loggedOut["5521967582535"]; marked {
+		t.Fatal("account must not be marked loggedOut when a different client is active")
+	}
+
+	// Active client itself fires LoggedOut -> now the account transitions to loggedOut.
+	m.handler(activeCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
+	if got := m.clients["5521967582535"]; got != nil {
+		t.Fatalf("expected active client to be removed on its own logout, got %v", got)
+	}
+	if _, marked := m.loggedOut["5521967582535"]; !marked {
+		t.Fatal("expected account to be marked loggedOut when active client logs out")
 	}
 }

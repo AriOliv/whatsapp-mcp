@@ -302,10 +302,17 @@ func Build(mgr *wa.Manager) *mcp.Server {
 			if err != nil {
 				return done(nil, err)
 			}
-			return done(formSentView{FormSent: res, To: in.Number}, nil)
+			return done(formSentView{
+				Kind:     kindSent,
+				What:     "form",
+				Preview:  res.Link,
+				ToName:   mgr.ChatName(ctx, acct(ctx), in.Number),
+				FormSent: res,
+				To:       in.Number,
+			}, nil)
 		})
-	mcp.AddTool(s, withUI(&mcp.Tool{Name: "whatsapp_get_form", Description: "Get a form sent with whatsapp_send_form: " +
-		"status (open, submitted, expired) and, once submitted, the answers by field id."}),
+	mcp.AddTool(s, &mcp.Tool{Name: "whatsapp_get_form", Description: "Get a form sent with whatsapp_send_form: " +
+		"status (open, submitted, expired) and, once submitted, the answers by field id."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in getFormArgs) (*mcp.CallToolResult, any, error) {
 			v, err := mgr.GetForm(ctx, acct(ctx), in.FormID)
 			if err != nil {
@@ -481,13 +488,17 @@ func Build(mgr *wa.Manager) *mcp.Server {
 	return s
 }
 
-// done builds a JSON text result (or an error result).
+// done builds a JSON text result plus structuredContent (for the MCP App UI),
+// or an error result.
 func done(v any, err error) (*mcp.CallToolResult, any, error) {
 	if err != nil {
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil, nil
 	}
 	b, _ := json.MarshalIndent(v, "", "  ")
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: string(b)}},
+		StructuredContent: json.RawMessage(b),
+	}, nil, nil
 }
 
 // clamp returns v bounded to (0, max], defaulting to def when v is unset.
@@ -592,6 +603,10 @@ type getFormArgs struct {
 }
 
 type formSentView struct {
+	Kind    string `json:"kind"`
+	What    string `json:"what"`
+	Preview string `json:"preview,omitempty"`
+	ToName  string `json:"to_name,omitempty"`
 	wa.FormSent
 	To string `json:"to"`
 }

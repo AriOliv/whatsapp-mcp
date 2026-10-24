@@ -148,7 +148,7 @@ export interface SentPayload {
   id: string;
   to: string;
   to_name?: string;
-  what: "text" | "media" | "audio" | "sticker" | "location" | "contact" | "poll" | "reaction" | "edit" | "delete";
+  what: "text" | "media" | "audio" | "sticker" | "location" | "contact" | "poll" | "reaction" | "edit" | "delete" | "buttons" | "list" | "carousel" | "form" | "flow" | string;
   preview?: string;
   ts_millis?: number;
 }

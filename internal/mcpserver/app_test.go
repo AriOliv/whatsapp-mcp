@@ -176,3 +176,37 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+func TestDonePopulatesStructuredContentForMCPApp(t *testing.T) {
+	v := newSentView("3EB0123", "5521967582535", "buttons", "Teste")
+	res, _, err := done(v, nil)
+	if err != nil {
+		t.Fatalf("done returned err: %v", err)
+	}
+	if res.StructuredContent == nil {
+		t.Fatal("done must set StructuredContent so the MCP App UI card hydrates")
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal StructuredContent: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal StructuredContent: %v", err)
+	}
+	if got["kind"] != kindSent || got["what"] != "buttons" {
+		t.Fatalf("unexpected StructuredContent: %+v", got)
+	}
+}
+
+func TestMaskAccountRedactsMiddleDigits(t *testing.T) {
+	if got := maskAccount("5521967582535"); got != "5521…2535" {
+		t.Fatalf("maskAccount(5521967582535) = %q, want 5521…2535", got)
+	}
+	if got := maskAccount(""); got != "default" {
+		t.Fatalf("maskAccount(\"\") = %q, want default", got)
+	}
+	if got := maskAccount("12345"); got != "***" {
+		t.Fatalf("maskAccount(12345) = %q, want ***", got)
+	}
+}
