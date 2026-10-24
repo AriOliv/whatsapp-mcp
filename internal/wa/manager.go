@@ -223,6 +223,35 @@ func (m *Manager) register(cli *whatsmeow.Client) {
 	m.mu.Unlock()
 }
 
+// activatePairedClient registers a newly paired client, clears any prior
+// logged-out marker for that phone number (in memory and Postgres), and
+// disconnects any superseded client that was still registered under the same
+// account key.
+func (m *Manager) activatePairedClient(cli *whatsmeow.Client) string {
+	cli.AddEventHandler(m.handler(cli))
+	key := accountKey(cli.Store.ID)
+	var old *whatsmeow.Client
+	m.mu.Lock()
+	if key != "" {
+		old = m.clients[key]
+		m.clients[key] = cli
+		if m.def == "" {
+			m.def = key
+		}
+		delete(m.loggedOut, key)
+	}
+	m.mu.Unlock()
+	if key != "" && m.store != nil {
+		if err := m.store.ClearLoggedOut(context.Background(), key); err != nil {
+			m.log.Errorf("clearing logout marker for %s after pairing failed: %v", key, err)
+		}
+	}
+	if old != nil && old != cli {
+		old.Disconnect()
+	}
+	return key
+}
+
 // PairInteractive creates a fresh device and prints a QR to the terminal for a
 // local (stdio) pairing. Blocks until paired, timeout, or ctx cancel.
 func (m *Manager) PairInteractive(ctx context.Context) error {
@@ -241,14 +270,7 @@ func (m *Manager) PairInteractive(ctx context.Context) error {
 			fmt.Fprintln(os.Stderr, "\nScan this QR in WhatsApp → Linked devices:")
 			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stderr)
 		case "success":
-			cli.AddEventHandler(m.handler(cli))
-			key := accountKey(cli.Store.ID)
-			m.mu.Lock()
-			m.clients[key] = cli
-			if m.def == "" {
-				m.def = key
-			}
-			m.mu.Unlock()
+			key := m.activatePairedClient(cli)
 			fmt.Fprintf(os.Stderr, "\nPaired as %s\n", key)
 			return nil
 		case "timeout":
@@ -298,14 +320,7 @@ func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(s
 				}
 			}
 		case "success":
-			cli.AddEventHandler(m.handler(cli))
-			key := accountKey(cli.Store.ID)
-			m.mu.Lock()
-			m.clients[key] = cli
-			if m.def == "" {
-				m.def = key
-			}
-			m.mu.Unlock()
+			key := m.activatePairedClient(cli)
 			fmt.Fprintf(os.Stderr, "\nPaired as %s\n", key)
 			return nil
 		case "timeout":
@@ -429,6 +444,9 @@ func (m *Manager) Health() (accounts []AccountHealth, connects, disconnects uint
 	// Logged-out accounts have no client left, so without this they would simply
 	// vanish from the listing and look like they were never paired.
 	for key, at := range m.loggedOut {
+		if m.clients[key] != nil {
+			continue
+		}
 		accounts = append(accounts, AccountHealth{
 			Account:     key,
 			State:       AccountNeedsRepair,
@@ -507,14 +525,26 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			key := accountKey(cli.Store.ID)
 			at := time.Now()
 			m.mu.Lock()
+			if current := m.clients[key]; current != nil && current != cli {
+				// A stale companion device for this phone number was unlinked
+				// while another client is active for the same account. Ignore
+				// it so the stale device cannot evict the live session or mark
+				// the account as needing re-pair.
+				m.mu.Unlock()
+				m.log.Warnf("ignoring logout of superseded device %v for account %s (active=%v) — reason: %v",
+					cli.Store.ID, key, current.Store.ID, v.Reason)
+				return
+			}
 			delete(m.clients, key)
 			m.loggedOut[key] = at
 			m.mu.Unlock()
 			// Persisted too: whatsmeow deletes its device row here, so without a
 			// record of our own the account vanishes on the next restart — and
 			// with Recreate, every deploy is a restart.
-			if err := m.store.MarkLoggedOut(context.Background(), key, fmt.Sprint(v.Reason), at); err != nil {
-				m.log.Errorf("recording logout of %s failed, it will be forgotten on restart: %v", key, err)
+			if m.store != nil {
+				if err := m.store.MarkLoggedOut(context.Background(), key, fmt.Sprint(v.Reason), at); err != nil {
+					m.log.Errorf("recording logout of %s failed, it will be forgotten on restart: %v", key, err)
+				}
 			}
 			// Not a reconnect: WhatsApp removed the linked device, so the
 			// session is gone and no amount of waiting brings it back. Kept in
@@ -526,12 +556,18 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			key := accountKey(cli.Store.ID)
 			n := m.connects.Add(1)
 			m.mu.Lock()
+			if key != "" && m.clients[key] == nil {
+				m.clients[key] = cli
+				if m.def == "" {
+					m.def = key
+				}
+			}
 			m.perAccountConnects[key]++
 			per := m.perAccountConnects[key]
 			_, wasLoggedOut := m.loggedOut[key]
 			delete(m.loggedOut, key) // re-paired: no longer needs human action
 			m.mu.Unlock()
-			if wasLoggedOut {
+			if wasLoggedOut && m.store != nil {
 				if err := m.store.ClearLoggedOut(context.Background(), key); err != nil {
 					m.log.Errorf("clearing logout marker for %s failed: %v", key, err)
 				}

@@ -11,7 +11,7 @@
  * an inline app belong to the conversation.
  */
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { app, applyHostContext, callTool, type McpUiHostContext } from "./lib/host";
+import { app, applyHostContext, callTool, getLatestToolResult, readPayload, type McpUiHostContext } from "./lib/host";
 import { setLocale } from "./lib/format";
 import { SkeletonRows, ErrorNote, CardHeader } from "./ui/atoms";
 import type {
@@ -37,11 +37,15 @@ export function App() {
 
   useEffect(() => {
     const onResult = (params: unknown) => {
-      const data = (params as { structuredContent?: Record<string, unknown> })?.structuredContent;
-      if (data && typeof data === "object" && typeof (data as { kind?: unknown }).kind === "string") {
+      const data = readPayload(params);
+      if (typeof data.kind === "string") {
         setView({ payload: data as unknown as Payload });
       }
     };
+    const buffered = getLatestToolResult();
+    if (buffered !== undefined) {
+      onResult(buffered);
+    }
     const onCtx = (next: McpUiHostContext) => {
       applyHostContext(next);
       setLocale(next.locale, next.timeZone);

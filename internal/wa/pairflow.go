@@ -79,14 +79,7 @@ func (m *Manager) StartFlow(flowID string) (*PairFlow, error) {
 				f.qrCode = evt.Code
 				f.mu.Unlock()
 			case "success":
-				cli.AddEventHandler(m.handler(cli))
-				key := accountKey(cli.Store.ID)
-				m.mu.Lock()
-				m.clients[key] = cli
-				if m.def == "" {
-					m.def = key
-				}
-				m.mu.Unlock()
+				key := m.activatePairedClient(cli)
 				f.mu.Lock()
 				f.state = "open"
 				f.sub = key
