@@ -134,3 +134,63 @@ func TestStaleCompanionLogoutDoesNotEvictActiveClient(t *testing.T) {
 		t.Fatal("expected account to be marked loggedOut when active client logs out")
 	}
 }
+
+func TestRegisterStaleLastAndLoggedOutKeepsActiveClient(t *testing.T) {
+	activeJID := types.NewADJID("5521967582535", 0, 37)
+	staleJID := types.NewADJID("5521967582535", 0, 35)
+	activeDev := &store.Device{ID: &activeJID, Log: waLog.Noop}
+	staleDev := &store.Device{ID: &staleJID, Log: waLog.Noop}
+
+	// 1. dedupeDevices in both orders keeps only :37.
+	for _, input := range [][]*store.Device{{activeDev, staleDev}, {staleDev, activeDev}} {
+		keep, stale := dedupeDevices(input)
+		if len(keep) != 1 || keep[0] != activeDev {
+			t.Fatalf("dedupeDevices keep=%v, want [activeDev]", keep)
+		}
+		if len(stale) != 1 || stale[0] != staleDev {
+			t.Fatalf("dedupeDevices stale=%v, want [staleDev]", stale)
+		}
+	}
+
+	// 2. Even if register() is called with active first and stale last,
+	// register() keeps the newer device (:37) and a subsequent stale LoggedOut
+	// leaves active in m.clients with no loggedOut marker.
+	m := &Manager{
+		clients:            map[string]*whatsmeow.Client{},
+		perAccountConnects: map[string]int{},
+		loggedOut:          map[string]time.Time{},
+		log:                waLog.Noop,
+	}
+	activeCli := m.newClient(activeDev)
+	staleCli := m.newClient(staleDev)
+
+	m.register(activeCli)
+	m.register(staleCli) // stale registered LAST
+
+	if got := m.clients["5521967582535"]; got != activeCli {
+		t.Fatalf("register(stale) overwrote newer active client: got %v, want %v", got, activeCli)
+	}
+
+	m.handler(staleCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
+
+	if got := m.clients["5521967582535"]; got != activeCli {
+		t.Fatalf("stale LoggedOut evicted active client: got %v, want %v", got, activeCli)
+	}
+	if _, marked := m.loggedOut["5521967582535"]; marked {
+		t.Fatal("account must not be marked loggedOut after stale companion logout")
+	}
+}
+
+func TestChatNameUnknownNumberReturnsEmpty(t *testing.T) {
+	m := &Manager{
+		clients:   map[string]*whatsmeow.Client{},
+		loggedOut: map[string]time.Time{},
+		log:       waLog.Noop,
+	}
+	if got := m.ChatName(context.Background(), "5521967582535", "5511999990000"); got != "" {
+		t.Fatalf("ChatName for unknown number = %q, want empty string", got)
+	}
+	if got := m.ChatName(context.Background(), "5521967582535", ""); got != "" {
+		t.Fatalf("ChatName for empty number = %q, want empty string", got)
+	}
+}
