@@ -36,11 +36,17 @@ func (m *Manager) ChatPreviews(ctx context.Context, account string, jids []strin
 
 // SenderNames resolves display names for the distinct senders of a message set
 // (group threads show who wrote each line). Contacts are read one by one, but
-// only for the handful of distinct senders in the page.
+// only for the handful of distinct senders in the page. Cross-checks @lid <->
+// @s.whatsapp.net via whatsmeow's LIDStore and strips :device suffixes before
+// querying the contact store.
 func (m *Manager) SenderNames(ctx context.Context, account string, msgs []appstore.Message) map[string]string {
-	cli, err := m.clientFor(ctx, account)
-	if err != nil {
-		return map[string]string{}
+	cli := m.lookupClient(account)
+	if cli == nil {
+		var err error
+		cli, err = m.clientFor(ctx, account)
+		if err != nil {
+			return map[string]string{}
+		}
 	}
 	seen := make(map[string]string, 8)
 	for _, msg := range msgs {
@@ -54,13 +60,19 @@ func (m *Manager) SenderNames(ctx context.Context, account string, msgs []appsto
 		if err != nil {
 			continue
 		}
-		if info, err := cli.Store.Contacts.GetContact(ctx, jid); err == nil {
-			if n := bestContactName(info); n != "" {
-				seen[msg.SenderJID] = n
+		info := resolveContactInfo(ctx, cli, jid)
+		if n := bestContactName(info); n != "" {
+			seen[msg.SenderJID] = n
+			continue
+		}
+		base := jid.ToNonAD()
+		if base.Server == types.HiddenUserServer {
+			if alt := alternateJID(ctx, cli, base); !alt.IsEmpty() && alt.User != "" {
+				seen[msg.SenderJID] = "+" + alt.User
 				continue
 			}
 		}
-		seen[msg.SenderJID] = "+" + jid.User
+		seen[msg.SenderJID] = "+" + base.User
 	}
 	return seen
 }
@@ -75,17 +87,16 @@ func (m *Manager) ChatName(ctx context.Context, account, jid string) string {
 	if jid == "" {
 		return ""
 	}
-	if !strings.Contains(jid, "@") {
-		if r, err := resolveJID(jid); err == nil {
-			jid = r.String()
+	variants := m.chatJIDVariants(ctx, account, jid)
+	acctKey := m.acct(account)
+	if m.store != nil && acctKey != "" {
+		for _, v := range variants {
+			if name, err := m.store.ChatName(ctx, acctKey, v); err == nil && name != "" {
+				return name
+			}
 		}
 	}
-	if m.store != nil {
-		if name, err := m.store.ChatName(ctx, m.acct(account), jid); err == nil && name != "" {
-			return name
-		}
-	}
-	chats := []appstore.Chat{{JID: jid}}
+	chats := []appstore.Chat{{JID: variants[0]}}
 	m.fillChatNames(ctx, account, chats)
 	return chats[0].Name
 }
