@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -28,11 +29,13 @@ import (
 )
 
 const (
-	PendingTTL   = 10 * time.Minute
-	CodeTTL      = 60 * time.Second
-	RefreshTTL   = 30 * 24 * time.Hour
-	AccessTTL    = time.Hour
-	RefreshGrace = 120 * time.Second
+	PendingTTL        = 10 * time.Minute
+	CodeTTL           = 60 * time.Second
+	RefreshTTL        = 30 * 24 * time.Hour
+	AccessTTL         = time.Hour
+	RefreshGrace      = 120 * time.Second
+	RefreshPurgeSlack = 60 * time.Second
+	purgeInterval     = time.Hour
 )
 
 // ErrInvalidGrant is returned when a refresh token is unknown, expired, tied to
@@ -128,8 +131,16 @@ func (s *Store) now() time.Time {
 	return time.Now()
 }
 
-// Init creates the refresh-token table and migrates existing databases in place
-// to add the rotation-grace and family columns without breaking legacy rows.
+func (s *Store) isSQLite() bool {
+	if s.db == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(fmt.Sprintf("%T", s.db.Driver())), "sqlite")
+}
+
+// Init creates the refresh-token table, migrates existing databases in place to
+// add the rotation-grace and family columns without breaking legacy rows, and
+// starts the hourly purge loop for expired and past-grace consumed tokens.
 func (s *Store) Init(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 		token             TEXT PRIMARY KEY,
@@ -160,8 +171,41 @@ func (s *Store) Init(ctx context.Context) error {
 			}
 		}
 	}
-	_, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_family ON oauth_refresh_tokens(family_id)`)
-	return err
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_family ON oauth_refresh_tokens(family_id)`); err != nil {
+		return err
+	}
+	_, _ = s.Purge(ctx)
+	go func() {
+		t := time.NewTicker(purgeInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_, _ = s.Purge(ctx)
+			}
+		}
+	}()
+	return nil
+}
+
+// Purge deletes refresh tokens whose rotation-grace window (plus 60s slack) has
+// elapsed, as well as any refresh tokens past their absolute expires_at.
+func (s *Store) Purge(ctx context.Context) (int64, error) {
+	now := s.now()
+	consumedCutoff := now.Add(-RefreshGrace - RefreshPurgeSlack).UnixMilli()
+	nowMs := now.UnixMilli()
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM oauth_refresh_tokens
+		 WHERE (consumed_at > 0 AND consumed_at < $1)
+		    OR expires_at < $2`,
+		consumedCutoff, nowMs)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func isDuplicateColumnErr(err error) bool {
@@ -251,12 +295,31 @@ func (s *Store) TakeCode(code string) (*AuthCode, bool) {
 //     a single refresh token all receive the same successor without invalid_grant.
 //   - Re-presenting a consumed refresh token after RefreshGrace treats it as
 //     token reuse, revokes the entire token family, and returns ErrInvalidGrant.
+//   - Concurrency: s.mu serializes RotateRefresh within a single replica (the
+//     production deployment runs replicas:1 with strategy Recreate), and on
+//     Postgres the row is also locked with SELECT ... FOR UPDATE inside the
+//     transaction so rotation stays race-free even with >1 replica.
 func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error) {
 	if token == "" {
 		return nil, ErrInvalidGrant
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `SELECT token, COALESCE(client_id,''), COALESCE(sub,''), COALESCE(resource,''),
+	                 COALESCE(scopes,''), COALESCE(expires_at,0),
+	                 COALESCE(family_id,''), COALESCE(consumed_at,0),
+	                 COALESCE(successor_refresh,''), COALESCE(successor_access,'')
+	          FROM oauth_refresh_tokens WHERE token=$1`
+	if !s.isSQLite() {
+		query += " FOR UPDATE"
+	}
 
 	var (
 		r                Refresh
@@ -267,13 +330,7 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 		successorRefresh string
 		successorAccess  string
 	)
-	row := s.db.QueryRowContext(ctx,
-		`SELECT token, COALESCE(client_id,''), COALESCE(sub,''), COALESCE(resource,''),
-		        COALESCE(scopes,''), COALESCE(expires_at,0),
-		        COALESCE(family_id,''), COALESCE(consumed_at,0),
-		        COALESCE(successor_refresh,''), COALESCE(successor_access,'')
-		 FROM oauth_refresh_tokens WHERE token=$1`, token)
-	if err := row.Scan(
+	if err := tx.QueryRowContext(ctx, query, token).Scan(
 		&r.Token, &r.ClientID, &r.Sub, &r.Resource,
 		&scopesJSON, &exp,
 		&familyID, &consumedAt,
@@ -295,11 +352,18 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 	if consumedAt > 0 {
 		age := nowMs - consumedAt
 		if age < 0 || age > RefreshGrace.Milliseconds() || successorRefresh == "" || successorAccess == "" {
-			_ = s.revokeFamily(ctx, familyID)
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM oauth_refresh_tokens WHERE family_id=$1 OR token=$1`, familyID); err != nil {
+				return nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
 			return nil, ErrInvalidGrant
 		}
+		// Do not revoke the family if hasDevice is false: deny the grant only,
+		// so a transient absence in memory never wipes out the token family.
 		if s.hasDevice != nil && !s.hasDevice(r.Sub) {
-			_ = s.revokeFamily(ctx, familyID)
 			return nil, ErrInvalidGrant
 		}
 		return &Tokens{
@@ -311,11 +375,15 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 	}
 
 	if nowMs > exp {
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM oauth_refresh_tokens WHERE token=$1`, r.Token)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_refresh_tokens WHERE token=$1`, r.Token); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 		return nil, ErrInvalidGrant
 	}
 	if s.hasDevice != nil && !s.hasDevice(r.Sub) {
-		_ = s.revokeFamily(ctx, familyID)
 		return nil, ErrInvalidGrant
 	}
 
@@ -330,12 +398,6 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 	newRefresh := randHex(32)
 	sc, _ := json.Marshal(r.Scopes)
 	newExp := now.Add(RefreshTTL).UnixMilli()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO oauth_refresh_tokens
@@ -363,12 +425,6 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 		ExpiresIn:    int(AccessTTL.Seconds()),
 		Scope:        joinScopes(r.Scopes),
 	}, nil
-}
-
-func (s *Store) revokeFamily(ctx context.Context, familyID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM oauth_refresh_tokens WHERE family_id=$1 OR token=$1`, familyID)
-	return err
 }
 
 func (s *Store) newRefresh(ctx context.Context, now time.Time, clientID, sub, resource string, scopes []string) (string, error) {

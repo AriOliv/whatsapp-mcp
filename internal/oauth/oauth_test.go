@@ -287,19 +287,99 @@ func TestRefreshExpiredAndUnlinkedDevice(t *testing.T) {
 		t.Fatalf("expired refresh: got %v, want ErrInvalidGrant", err)
 	}
 
-	// 2. Unlinked device fails with ErrInvalidGrant and revokes family.
+	// 2. hasDevice=false denies the grant without revoking the family (both on
+	// first consumption and during grace replay), so a transient absence never
+	// logs out active clients once the device is present again.
 	now = t0
-	tokUnlinked, err := st.Issue(ctx, "wa_client", "5511999999999", "", []string{"mcp:tools"})
+	tokDevice, err := st.Issue(ctx, "wa_client", "5511999999999", "", []string{"mcp:tools"})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 	paired = false
-	if _, err := st.RotateRefresh(ctx, tokUnlinked.RefreshToken); !errors.Is(err, ErrInvalidGrant) {
+	if _, err := st.RotateRefresh(ctx, tokDevice.RefreshToken); !errors.Is(err, ErrInvalidGrant) {
 		t.Fatalf("unlinked device refresh: got %v, want ErrInvalidGrant", err)
 	}
 	paired = true
-	if _, err := st.RotateRefresh(ctx, tokUnlinked.RefreshToken); !errors.Is(err, ErrInvalidGrant) {
-		t.Fatalf("refresh after unlinked revocation should stay invalid, got %v", err)
+	succ, err := st.RotateRefresh(ctx, tokDevice.RefreshToken)
+	if err != nil {
+		t.Fatalf("refresh after device returns should succeed (family not revoked): %v", err)
+	}
+	// During grace window, hasDevice=false also denies without revoking the family.
+	now = t0.Add(15 * time.Second)
+	paired = false
+	if _, err := st.RotateRefresh(ctx, tokDevice.RefreshToken); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("grace replay while hasDevice=false: got %v, want ErrInvalidGrant", err)
+	}
+	paired = true
+	replay, err := st.RotateRefresh(ctx, tokDevice.RefreshToken)
+	if err != nil {
+		t.Fatalf("grace replay after device returns: %v", err)
+	}
+	if replay.RefreshToken != succ.RefreshToken {
+		t.Fatalf("expected same successor after transient hasDevice=false, got %s want %s", replay.RefreshToken, succ.RefreshToken)
+	}
+	if _, err := st.RotateRefresh(ctx, succ.RefreshToken); err != nil {
+		t.Fatalf("successor token should remain valid after transient hasDevice=false: %v", err)
+	}
+}
+
+func TestRefreshPurge(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db := newTestDB(t)
+
+	t0 := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	now := t0
+	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st.nowFn = func() time.Time { return now }
+	if err := st.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Issue and rotate a token at t0 -> creates consumed row (tok1) + active successor (succ1).
+	tok1, err := st.Issue(ctx, "wa_client", "5511999999991", "", []string{"mcp:tools"})
+	if err != nil {
+		t.Fatalf("Issue tok1: %v", err)
+	}
+	succ1, err := st.RotateRefresh(ctx, tok1.RefreshToken)
+	if err != nil {
+		t.Fatalf("RotateRefresh tok1: %v", err)
+	}
+
+	// Issue an unconsumed token whose expires_at will be in the past when we purge at t0 + 181s.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO oauth_refresh_tokens (token, client_id, sub, resource, scopes, expires_at, family_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		"expired_unconsumed", "wa_client", "5511999999992", "https://whatsapp.avenia.tech/mcp", `["mcp:tools"]`,
+		t0.Add(60*time.Second).UnixMilli(), "expired_unconsumed",
+	); err != nil {
+		t.Fatalf("insert expired_unconsumed: %v", err)
+	}
+
+	// At t0 + 150s (within RefreshGrace + 60s = 180s): tok1 must NOT be purged yet,
+	// while expired_unconsumed (expired at +60s) MUST be purged.
+	now = t0.Add(150 * time.Second)
+	n, err := st.Purge(ctx)
+	if err != nil {
+		t.Fatalf("Purge at +150s: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Purge at +150s deleted %d row(s), want 1 (only expired_unconsumed)", n)
+	}
+
+	// At t0 + 181s (> RefreshGrace + 60s): tok1 is purged, while active succ1 stays.
+	now = t0.Add(RefreshGrace + RefreshPurgeSlack + time.Second)
+	n, err = st.Purge(ctx)
+	if err != nil {
+		t.Fatalf("Purge at +181s: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Purge at +181s deleted %d row(s), want 1 (consumed tok1)", n)
+	}
+
+	// Active successor succ1 is untouched and still rotates cleanly.
+	if _, err := st.RotateRefresh(ctx, succ1.RefreshToken); err != nil {
+		t.Fatalf("active successor succ1 should remain rotatable after Purge: %v", err)
 	}
 }
 
