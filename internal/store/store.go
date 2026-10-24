@@ -242,6 +242,9 @@ type Message struct {
 	// MediaProto is the serialized whatsmeow message proto (carries the media
 	// keys) for media messages, used by DownloadMedia. Never serialized to JSON.
 	MediaProto []byte `json:"-"`
+	// ChatName is an optional fallback display name (e.g. sender PushName on a
+	// 1:1 DM) stored on the chat row only when the chat has no name yet.
+	ChatName string `json:"-"`
 }
 
 // Chat is one stored chat row.
@@ -261,9 +264,11 @@ func (s *Store) SaveMessage(ctx context.Context, account string, m Message) erro
 		account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType, m.MediaProto); err != nil {
 		return err
 	}
-	ch := `INSERT INTO chats (account_jid,jid,last_ts) VALUES (?,?,?)
-		ON CONFLICT (account_jid,jid) DO UPDATE SET last_ts=excluded.last_ts WHERE excluded.last_ts > chats.last_ts`
-	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.TS)
+	ch := `INSERT INTO chats (account_jid,jid,name,last_ts) VALUES (?,?,NULLIF(?,''),?)
+		ON CONFLICT (account_jid,jid) DO UPDATE SET
+			last_ts = CASE WHEN excluded.last_ts > COALESCE(chats.last_ts,0) THEN excluded.last_ts ELSE chats.last_ts END,
+			name = CASE WHEN COALESCE(chats.name,'') = '' AND COALESCE(excluded.name,'') <> '' THEN excluded.name ELSE chats.name END`
+	_, err := s.db.ExecContext(ctx, s.reb(ch), account, m.ChatJID, m.ChatName, m.TS)
 	return err
 }
 
@@ -417,18 +422,37 @@ func (s *Store) ListChats(ctx context.Context, account string, limit int) ([]Cha
 
 // ListMessages returns messages in a chat, most-recent first.
 func (s *Store) ListMessages(ctx context.Context, account, chatJID string, limit int) ([]Message, error) {
+	return s.ListMessagesForJIDs(ctx, account, []string{chatJID}, limit)
+}
+
+// ListMessagesForJIDs returns messages across one or more equivalent JIDs for a
+// single chat (e.g. a contact's @s.whatsapp.net and @lid JIDs), scoped strictly
+// to `account`, most-recent first.
+func (s *Store) ListMessagesForJIDs(ctx context.Context, account string, chatJIDs []string, limit int) ([]Message, error) {
+	if account == "" || len(chatJIDs) == 0 {
+		return []Message{}, nil
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, s.reb(
-		`SELECT id,chat_jid,COALESCE(sender_jid,''),from_me,COALESCE(ts,0),COALESCE(body,''),COALESCE(media_type,'')
-		 FROM messages WHERE account_jid=? AND chat_jid=? ORDER BY ts DESC LIMIT ?`),
-		account, chatJID, limit)
+	ph := make([]string, len(chatJIDs))
+	args := make([]any, 0, len(chatJIDs)+2)
+	args = append(args, account)
+	for i, j := range chatJIDs {
+		ph[i] = "?"
+		args = append(args, j)
+	}
+	args = append(args, limit)
+	q := `SELECT id,chat_jid,COALESCE(sender_jid,''),from_me,COALESCE(ts,0),COALESCE(body,''),COALESCE(media_type,'')
+	      FROM messages
+	      WHERE account_jid=? AND chat_jid IN (` + strings.Join(ph, ",") + `)
+	      ORDER BY ts DESC, id DESC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, s.reb(q), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Message
+	out := []Message{}
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.ChatJID, &m.SenderJID, &m.FromMe, &m.TS, &m.Body, &m.MediaType); err != nil {
@@ -475,27 +499,6 @@ func (s *Store) LatestPerChat(ctx context.Context, account string, chatJIDs []st
 			return nil, err
 		}
 		out[m.ChatJID] = m
-	}
-	return out, rows.Err()
-}
-
-// AllLIDMappings returns whatsmeow's full LID→phone map (user parts only) in a
-// single query, so callers can resolve @lid contacts to phone numbers in memory
-// instead of one round-trip per contact. Reads whatsmeow's shared lid-map table;
-// returns an empty map (not an error) if the table isn't present yet.
-func (s *Store) AllLIDMappings(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT lid, pn FROM whatsmeow_lid_map`)
-	if err != nil {
-		return map[string]string{}, nil
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var lid, pn string
-		if err := rows.Scan(&lid, &pn); err != nil {
-			return out, err
-		}
-		out[lid] = pn
 	}
 	return out, rows.Err()
 }

@@ -93,6 +93,9 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 	if err := container.Upgrade(ctx); err != nil {
 		return nil, fmt.Errorf("whatsmeow store upgrade: %w", err)
 	}
+	if container.LIDMap != nil {
+		_ = container.LIDMap.FillCache(ctx)
+	}
 	m := &Manager{
 		container:           container,
 		store:               st,
@@ -541,6 +544,10 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 					mediaRaw = b
 				}
 			}
+			var chatName string
+			if !v.Info.IsFromMe && !v.Info.IsGroup && v.Info.Chat.Server != types.NewsletterServer && v.Info.Chat.String() != "status@broadcast" {
+				chatName = strings.TrimSpace(v.Info.PushName)
+			}
 			msg := appstore.Message{
 				ID:         v.Info.ID,
 				ChatJID:    v.Info.Chat.String(),
@@ -550,6 +557,7 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 				Body:       body,
 				MediaType:  mt,
 				MediaProto: mediaRaw,
+				ChatName:   chatName,
 			}
 			m.enqueueMessage(acct, msg, m.inboundFor(context.Background(), acct, v, msg))
 		case *events.UndecryptableMessage:
@@ -938,9 +946,8 @@ type Contact struct {
 }
 
 // Contacts returns the account's stored contacts, each enriched with the sender
-// phone number: taken straight from the JID for phone-based (@s.whatsapp.net)
-// contacts, or resolved from the LID→phone map for @lid contacts when a mapping
-// is known (empty otherwise — the number is private in that case).
+// phone number and merged across @lid / @s.whatsapp.net counterparts via
+// whatsmeow's LIDStore API (cli.Store.LIDs.GetPNForLID / GetLIDForPN).
 func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Contact, error) {
 	cli, err := m.clientFor(ctx, account)
 	if err != nil {
@@ -950,19 +957,26 @@ func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Cont
 	if err != nil {
 		return nil, err
 	}
-	// Resolve @lid→phone in bulk with ONE query (there can be tens of thousands
-	// of contacts; a per-contact GetPNForLID would be tens of thousands of cold
-	// round-trips and time the request out). Best-effort: on error we still
-	// return contacts, just without @lid numbers.
-	lidMap, err := m.store.AllLIDMappings(ctx)
-	if err != nil {
-		lidMap = map[string]string{}
-	}
 	out := make(map[string]Contact, len(raw))
 	for jid, c := range raw {
+		alt := alternateJID(ctx, cli, jid)
+		num := ""
+		switch jid.Server {
+		case types.DefaultUserServer:
+			num = jid.User
+		case types.HiddenUserServer:
+			if !alt.IsEmpty() {
+				num = alt.User
+			}
+		}
+		if !alt.IsEmpty() {
+			if altInfo, ok := raw[alt]; ok {
+				c = mergeContactInfo(c, altInfo)
+			}
+		}
 		out[jid.String()] = Contact{
 			JID:           jid.String(),
-			Number:        contactNumber(jid, lidMap),
+			Number:        num,
 			Found:         c.Found,
 			FirstName:     c.FirstName,
 			FullName:      c.FullName,
@@ -972,19 +986,6 @@ func (m *Manager) Contacts(ctx context.Context, account string) (map[string]Cont
 		}
 	}
 	return out, nil
-}
-
-// contactNumber returns the full phone number (digits) for a contact JID, or ""
-// when unknown. Phone JIDs carry it in the user part; @lid JIDs are looked up in
-// the pre-loaded LID→phone map (keyed by user part).
-func contactNumber(jid types.JID, lidMap map[string]string) string {
-	switch jid.Server {
-	case "s.whatsapp.net":
-		return jid.User
-	case "lid":
-		return lidMap[jid.User]
-	}
-	return ""
 }
 
 // CheckNumbers reports which numbers are on WhatsApp.
@@ -1467,7 +1468,35 @@ func (m *Manager) ListChats(ctx context.Context, account string, limit int) ([]a
 }
 
 func (m *Manager) ListMessages(ctx context.Context, account, chatJID string, limit int) ([]appstore.Message, error) {
-	return m.store.ListMessages(ctx, m.acct(account), chatJID, limit)
+	if m.store == nil {
+		return []appstore.Message{}, nil
+	}
+	variants := m.chatJIDVariants(ctx, account, chatJID)
+	return m.store.ListMessagesForJIDs(ctx, m.acct(account), variants, limit)
+}
+
+// chatJIDVariants normalizes a chat identifier (expanding bare phone digits to
+// @s.whatsapp.net) and returns both its @s.whatsapp.net and @lid forms when a
+// LID<->PN mapping is known for the caller's account.
+func (m *Manager) chatJIDVariants(ctx context.Context, account, chatJID string) []string {
+	chatJID = strings.TrimSpace(chatJID)
+	if chatJID == "" {
+		return nil
+	}
+	if !strings.Contains(chatJID, "@") {
+		if r, err := resolveJID(chatJID); err == nil {
+			chatJID = r.String()
+		}
+	}
+	out := []string{chatJID}
+	parsed, err := types.ParseJID(chatJID)
+	if err != nil {
+		return out
+	}
+	if alt := alternateJID(ctx, m.lookupClient(account), parsed); !alt.IsEmpty() && alt.String() != chatJID {
+		out = append(out, alt.String())
+	}
+	return out
 }
 
 // maxMediaBytes caps a single media download so the base64 result stays within
@@ -1609,19 +1638,24 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 	if !needGroup && !needNewsletter && !needOther {
 		return
 	}
-	cli, err := m.clientFor(ctx, account)
-	if err != nil {
-		return // not connected: leave names empty rather than error the listing
+	cli := m.lookupClient(account)
+	if cli == nil {
+		return // no registered client: leave names empty rather than error the listing
 	}
 	// Group and newsletter names come from a cache that refreshes in the
-	// background: the lookup waits briefly and otherwise returns what it has,
-	// rather than holding the listing open for a WhatsApp round-trip.
+	// background over the WhatsApp socket; only require a live connection when
+	// one of those is actually needed. Local 1:1 contact lookups read straight
+	// from the database and work even while the socket is reconnecting.
 	var groups, newsletters map[string]string
-	if needGroup {
-		groups = m.groupNames(ctx, account, cli)
-	}
-	if needNewsletter {
-		newsletters = m.newsletterNames(ctx, account, cli)
+	if needGroup || needNewsletter {
+		if connCli, err := m.clientFor(ctx, account); err == nil {
+			if needGroup {
+				groups = m.groupNames(ctx, account, connCli)
+			}
+			if needNewsletter {
+				newsletters = m.newsletterNames(ctx, account, connCli)
+			}
+		}
 	}
 	// The contact reads below are local, but there is one per chat; bound the
 	// loop so a contended pool cannot stretch a listing past its caller's
@@ -1650,11 +1684,7 @@ func (m *Manager) fillChatNames(ctx context.Context, account string, chats []app
 			if err != nil {
 				continue
 			}
-			if cli.Store != nil && cli.Store.Contacts != nil {
-				if info, err := cli.Store.Contacts.GetContact(ctx, jid); err == nil {
-					c.Name = bestContactName(info)
-				}
-			}
+			c.Name = bestContactName(resolveContactInfo(ctx, cli, jid))
 		}
 		if c.Name != "" {
 			learned[c.JID] = c.Name
@@ -1685,12 +1715,68 @@ func bestContactName(c types.ContactInfo) string {
 	switch {
 	case c.FullName != "":
 		return c.FullName
+	case c.FirstName != "":
+		return c.FirstName
 	case c.PushName != "":
 		return c.PushName
 	case c.BusinessName != "":
 		return c.BusinessName
 	default:
 		return c.RedactedPhone
+	}
+}
+
+// alternateJID returns the counterpart JID (@lid -> @s.whatsapp.net or
+// @s.whatsapp.net -> @lid) using whatsmeow's LIDStore API, or EmptyJID when
+// unknown.
+//
+// Note: whatsmeow's LID map is process-global (keyed by LID alone, not per
+// account), since a WhatsApp LID<->PN mapping is a global identity property.
+// Tenant isolation is enforced by scoping all chat, message, and contact reads
+// by account_jid / device store.
+func alternateJID(ctx context.Context, cli *whatsmeow.Client, jid types.JID) types.JID {
+	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
+		return types.EmptyJID
+	}
+	base := jid.ToNonAD()
+	switch base.Server {
+	case types.HiddenUserServer:
+		if pn, err := cli.Store.LIDs.GetPNForLID(ctx, base); err == nil && !pn.IsEmpty() && pn.User != "" {
+			return pn.ToNonAD()
+		}
+	case types.DefaultUserServer:
+		if lid, err := cli.Store.LIDs.GetLIDForPN(ctx, base); err == nil && !lid.IsEmpty() && lid.User != "" {
+			return lid.ToNonAD()
+		}
+	}
+	return types.EmptyJID
+}
+
+// resolveContactInfo reads a contact by its non-AD JID and merges any fields
+// stored under its @lid / @s.whatsapp.net counterpart so address-book names on
+// @s.whatsapp.net resolve for @lid chats/senders and vice-versa.
+func resolveContactInfo(ctx context.Context, cli *whatsmeow.Client, jid types.JID) types.ContactInfo {
+	if cli == nil || cli.Store == nil || cli.Store.Contacts == nil {
+		return types.ContactInfo{}
+	}
+	base := jid.ToNonAD()
+	info, _ := cli.Store.Contacts.GetContact(ctx, base)
+	if alt := alternateJID(ctx, cli, base); !alt.IsEmpty() {
+		if altInfo, err := cli.Store.Contacts.GetContact(ctx, alt); err == nil {
+			info = mergeContactInfo(info, altInfo)
+		}
+	}
+	return info
+}
+
+func mergeContactInfo(a, b types.ContactInfo) types.ContactInfo {
+	return types.ContactInfo{
+		Found:         a.Found || b.Found,
+		FirstName:     orDefault(a.FirstName, b.FirstName),
+		FullName:      orDefault(a.FullName, b.FullName),
+		PushName:      orDefault(a.PushName, b.PushName),
+		BusinessName:  orDefault(a.BusinessName, b.BusinessName),
+		RedactedPhone: orDefault(a.RedactedPhone, b.RedactedPhone),
 	}
 }
 
