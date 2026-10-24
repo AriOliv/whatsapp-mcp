@@ -291,6 +291,82 @@ func (s *Store) SavePlaceholder(ctx context.Context, account string, m Message) 
 	return err
 }
 
+// SaveHistoryBatch upserts a batch of historical messages (and their chat
+// activity/fallback names) inside a single transaction, scoped strictly to
+// `account`. The upsert is idempotent by (account_jid, id) and never clobbers a
+// non-empty body or media proto that was already stored (while upgrading any
+// undecryptable placeholder with the real text from HistorySync).
+func (s *Store) SaveHistoryBatch(ctx context.Context, account string, msgs []Message) error {
+	if account == "" || len(msgs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	msgStmt, err := tx.PrepareContext(ctx, s.reb(`
+		INSERT INTO messages (account_jid,id,chat_jid,sender_jid,from_me,ts,body,media_type,media)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (account_jid,id) DO UPDATE SET
+			chat_jid = excluded.chat_jid,
+			body = CASE
+				WHEN COALESCE(messages.body,'') = '' OR messages.body = '[mensagem não decifrada — aguardando reenvio do remetente]'
+				THEN excluded.body
+				ELSE messages.body
+			END,
+			media_type = COALESCE(NULLIF(messages.media_type,''), excluded.media_type),
+			media = COALESCE(messages.media, excluded.media)`))
+	if err != nil {
+		return err
+	}
+	defer msgStmt.Close()
+
+	type chatMeta struct {
+		lastTS int64
+		name   string
+	}
+	chats := make(map[string]chatMeta, 16)
+	for _, m := range msgs {
+		if m.ID == "" || m.ChatJID == "" {
+			continue
+		}
+		if _, err := msgStmt.ExecContext(ctx,
+			account, m.ID, m.ChatJID, m.SenderJID, m.FromMe, m.TS, m.Body, m.MediaType, m.MediaProto,
+		); err != nil {
+			return err
+		}
+		cm := chats[m.ChatJID]
+		if m.TS > cm.lastTS {
+			cm.lastTS = m.TS
+		}
+		if cm.name == "" && m.ChatName != "" {
+			cm.name = m.ChatName
+		}
+		chats[m.ChatJID] = cm
+	}
+
+	if len(chats) > 0 {
+		chatStmt, err := tx.PrepareContext(ctx, s.reb(`
+			INSERT INTO chats (account_jid,jid,name,last_ts) VALUES (?,?,NULLIF(?,''),?)
+			ON CONFLICT (account_jid,jid) DO UPDATE SET
+				last_ts = CASE WHEN excluded.last_ts > COALESCE(chats.last_ts,0) THEN excluded.last_ts ELSE chats.last_ts END,
+				name = CASE WHEN COALESCE(chats.name,'') = '' AND COALESCE(excluded.name,'') <> '' THEN excluded.name ELSE chats.name END`))
+		if err != nil {
+			return err
+		}
+		defer chatStmt.Close()
+		for jid, cm := range chats {
+			if _, err := chatStmt.ExecContext(ctx, account, jid, cm.name, cm.lastTS); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
 // MarkLoggedOut records that WhatsApp unlinked an account, so it survives the
 // restart that wipes the in-memory flag (and the whatsmeow device row).
 func (s *Store) MarkLoggedOut(ctx context.Context, account, reason string, at time.Time) error {
@@ -464,6 +540,36 @@ func (s *Store) ListMessagesForJIDs(ctx context.Context, account string, chatJID
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// OldestMessage returns the oldest stored message across `chatJIDs` for
+// `account` (used as the anchor for BuildHistorySyncRequest), or nil if none.
+func (s *Store) OldestMessage(ctx context.Context, account string, chatJIDs []string) (*Message, error) {
+	if account == "" || len(chatJIDs) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(chatJIDs))
+	args := make([]any, 0, len(chatJIDs)+1)
+	args = append(args, account)
+	for i, j := range chatJIDs {
+		ph[i] = "?"
+		args = append(args, j)
+	}
+	q := `SELECT id,chat_jid,COALESCE(sender_jid,''),from_me,COALESCE(ts,0),COALESCE(body,''),COALESCE(media_type,'')
+	      FROM messages
+	      WHERE account_jid=? AND chat_jid IN (` + strings.Join(ph, ",") + `)
+	      ORDER BY ts ASC, id ASC LIMIT 1`
+	var m Message
+	err := s.db.QueryRowContext(ctx, s.reb(q), args...).Scan(
+		&m.ID, &m.ChatJID, &m.SenderJID, &m.FromMe, &m.TS, &m.Body, &m.MediaType,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // LatestPerChat returns the most recent message of each of the given chats in a
