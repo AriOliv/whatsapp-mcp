@@ -45,6 +45,10 @@ services:
       DATABASE_URL: postgres://whatsapp:${POSTGRES_PASSWORD}@db:5432/whatsapp?sslmode=disable
       WA_DEVICE_NAME: ${WA_DEVICE_NAME:-Avenia WhatsApp MCP (local)}
       WA_HISTORY_SYNC: ${WA_HISTORY_SYNC:-on}
+      # Optional gateway REST /api/* (static bearer, only the listed accounts).
+      # Empty values keep it off.
+      GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN:-}
+      INBOUND_WEBHOOK_ACCOUNTS: ${INBOUND_WEBHOOK_ACCOUNTS:-}
 
 volumes:
   pgdata:
