@@ -96,7 +96,7 @@ func TestRefreshConcurrentProcessesReceiveSameSuccessor(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	h := NewHandlers(st, nil, "https://mcp.example.com")
+	h := NewHandlers(st, nil, "https://mcp.example.com", Config{})
 	h.Register(mux, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -401,7 +401,7 @@ func TestBearerGuard401AndResourceMetadataOnExpiredToken(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	h := NewHandlers(st, nil, "https://mcp.example.com")
+	h := NewHandlers(st, nil, "https://mcp.example.com", Config{})
 	h.Register(mux, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"sub": SubFromContext(r.Context())})
 	}))

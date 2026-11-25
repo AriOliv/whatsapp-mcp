@@ -10,28 +10,145 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/AriOliv/whatsapp-mcp/internal/wa"
 )
 
+// Pairer runs the WhatsApp pairing behind the login page.
+type Pairer interface {
+	StartFlow(flowID string) (*wa.PairFlow, error)
+	Flow(flowID string) (*wa.PairFlow, bool)
+	EndFlow(flowID string)
+}
+
+// Config bounds what unauthenticated callers can make the server do. Zero
+// values take the defaults below.
+type Config struct {
+	// AllowedRedirectHosts are the https hosts DCR clients may redirect to.
+	AllowedRedirectHosts []string
+	MaxFlows             int
+	MaxFlowsPerIP        int
+	FlowTTL              time.Duration
+}
+
+const (
+	defaultMaxFlows      = 20
+	defaultMaxFlowsPerIP = 3
+	defaultFlowTTL       = 5 * time.Minute
+	maxRegisterBody      = 64 << 10
+	maxClientNameLen     = 100
+)
+
 // Handlers serves the OAuth 2.1 authorization-server endpoints, the WhatsApp
 // pairing login page, and the bearer guard for /mcp.
 type Handlers struct {
 	store     *Store
-	mgr       *wa.Manager
+	mgr       Pairer
 	publicURL string
 	tmpl      *template.Template
+	cfg       Config
+
+	registerLimit *ipLimiter // /register
+	startLimit    *ipLimiter // /authorize and /login/pairing: each one reaches WhatsApp
+	pageLimit     *ipLimiter // /login, /login/qr, /login/status: the page polls these
+
+	flowMu sync.Mutex
+	flows  map[string]*flowSlot
 }
 
-func NewHandlers(store *Store, mgr *wa.Manager, publicURL string) *Handlers {
-	return &Handlers{
-		store:     store,
-		mgr:       mgr,
-		publicURL: strings.TrimRight(publicURL, "/"),
-		tmpl:      template.Must(template.New("login").Parse(loginHTML)),
+// flowSlot is one live pairing flow, held against the global and per-IP caps
+// until it pairs, fails or its TTL ends.
+type flowSlot struct {
+	ip    string
+	timer *time.Timer
+}
+
+func NewHandlers(store *Store, mgr Pairer, publicURL string, cfg Config) *Handlers {
+	if len(cfg.AllowedRedirectHosts) == 0 {
+		cfg.AllowedRedirectHosts = DefaultRedirectHosts
 	}
+	if cfg.MaxFlows <= 0 {
+		cfg.MaxFlows = defaultMaxFlows
+	}
+	if cfg.MaxFlowsPerIP <= 0 {
+		cfg.MaxFlowsPerIP = defaultMaxFlowsPerIP
+	}
+	if cfg.FlowTTL <= 0 {
+		cfg.FlowTTL = defaultFlowTTL
+	}
+	return &Handlers{
+		store:         store,
+		mgr:           mgr,
+		publicURL:     strings.TrimRight(publicURL, "/"),
+		tmpl:          template.Must(template.New("login").Parse(loginHTML)),
+		cfg:           cfg,
+		registerLimit: newIPLimiter(10, 5),
+		startLimit:    newIPLimiter(10, 5),
+		pageLimit:     newIPLimiter(120, 40),
+		flows:         map[string]*flowSlot{},
+	}
+}
+
+// pageLimited wraps a login-page endpoint with the polling rate limit.
+func (h *Handlers) pageLimited(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !h.pageLimit.allow(clientIP(r)) {
+			tooMany(w)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// reserveFlow registers a pending authorization and takes a pairing slot, or
+// says why it cannot.
+func (h *Handlers) reserveFlow(ip string, p *Pending) (string, error) {
+	h.flowMu.Lock()
+	defer h.flowMu.Unlock()
+	perIP := 0
+	for _, f := range h.flows {
+		if f.ip == ip {
+			perIP++
+		}
+	}
+	if len(h.flows) >= h.cfg.MaxFlows {
+		return "", errors.New("too many logins in progress, try again in a few minutes")
+	}
+	if perIP >= h.cfg.MaxFlowsPerIP {
+		return "", errors.New("too many logins in progress from this address, finish or wait for one to expire")
+	}
+	flowID := h.store.NewPending(p)
+	slot := &flowSlot{ip: ip}
+	slot.timer = time.AfterFunc(h.cfg.FlowTTL, func() { h.endFlow(flowID) })
+	h.flows[flowID] = slot
+	return flowID, nil
+}
+
+// endFlow frees a flow's slot, forgets its pending authorization and tears
+// down its pairing client. Safe to call more than once.
+func (h *Handlers) endFlow(flowID string) {
+	h.flowMu.Lock()
+	slot := h.flows[flowID]
+	delete(h.flows, flowID)
+	h.flowMu.Unlock()
+	if slot == nil {
+		return
+	}
+	slot.timer.Stop()
+	h.store.DeletePending(flowID)
+	if h.mgr != nil {
+		h.mgr.EndFlow(flowID)
+	}
+}
+
+func (h *Handlers) activeFlows() int {
+	h.flowMu.Lock()
+	defer h.flowMu.Unlock()
+	return len(h.flows)
 }
 
 // Register wires all routes onto mux; mcpHandler is the streamable-HTTP MCP
@@ -43,10 +160,10 @@ func (h *Handlers) Register(mux *http.ServeMux, mcpHandler http.Handler) {
 	mux.HandleFunc("/authorize", h.authorize)
 	mux.HandleFunc("/token", h.token)
 	mux.HandleFunc("/register", h.register)
-	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/login/qr", h.loginQR)
+	mux.HandleFunc("/login", h.pageLimited(h.login))
+	mux.HandleFunc("/login/qr", h.pageLimited(h.loginQR))
 	mux.HandleFunc("/login/pairing", h.loginPairing)
-	mux.HandleFunc("/login/status", h.loginStatus)
+	mux.HandleFunc("/login/status", h.pageLimited(h.loginStatus))
 	mux.Handle("/mcp", h.BearerGuard(mcpHandler))
 }
 
@@ -74,6 +191,11 @@ func (h *Handlers) authServerMeta(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !h.startLimit.allow(ip) {
+		tooMany(w)
+		return
+	}
 	q := r.URL.Query()
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
@@ -94,18 +216,27 @@ func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "redirect_uri not registered", http.StatusBadRequest)
 		return
 	}
+	if res := q.Get("resource"); res != "" && !sameResource(res, h.store.resource) {
+		http.Error(w, "invalid_target: this server only issues tokens for "+h.store.resource, http.StatusBadRequest)
+		return
+	}
 	p := &Pending{
 		ClientID:      clientID,
 		RedirectURI:   redirectURI,
 		State:         q.Get("state"),
 		Scopes:        strings.Fields(q.Get("scope")),
 		CodeChallenge: q.Get("code_challenge"),
-		Resource:      q.Get("resource"),
+		Resource:      h.store.resource,
 	}
-	flowID := h.store.NewPending(p)
+	flowID, err := h.reserveFlow(ip, p)
+	if err != nil {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
 	if _, err := h.mgr.StartFlow(flowID); err != nil {
-		h.store.DeletePending(flowID)
-		http.Error(w, "could not start pairing: "+err.Error(), http.StatusInternalServerError)
+		h.endFlow(flowID)
+		http.Error(w, "could not start pairing", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/login?authFlow="+url.QueryEscape(flowID), http.StatusFound)
@@ -131,6 +262,10 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 			tokenErr(w, "invalid_client")
 			return
 		}
+		if ru := r.Form.Get("redirect_uri"); ru != "" && ru != ac.RedirectURI {
+			tokenErr(w, "invalid_grant")
+			return
+		}
 		issueAndWrite(r.Context(), w, h.store, ac.ClientID, ac.Sub, ac.Resource, ac.Scopes)
 	case "refresh_token":
 		toks, err := h.store.RotateRefresh(r.Context(), r.Form.Get("refresh_token"))
@@ -149,12 +284,31 @@ func (h *Handlers) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) register(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.registerLimit.allow(clientIP(r)) {
+		tooMany(w)
+		return
+	}
 	var body struct {
 		RedirectURIs []string `json:"redirect_uris"`
 		ClientName   string   `json:"client_name"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	c := h.store.RegisterClient(body.RedirectURIs, body.ClientName)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRegisterBody)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_client_metadata"})
+		return
+	}
+	if err := validateRedirectURIs(body.RedirectURIs, h.cfg.AllowedRedirectHosts); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_redirect_uri", "error_description": err.Error()})
+		return
+	}
+	name := []rune(strings.TrimSpace(body.ClientName))
+	if len(name) > maxClientNameLen {
+		name = name[:maxClientNameLen]
+	}
+	c := h.store.RegisterClient(body.RedirectURIs, string(name))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"client_id":                  c.ID,
 		"redirect_uris":              c.RedirectURIs,
@@ -191,6 +345,10 @@ func (h *Handlers) loginQR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) loginPairing(w http.ResponseWriter, r *http.Request) {
+	if !h.startLimit.allow(clientIP(r)) {
+		tooMany(w)
+		return
+	}
 	f, ok := h.mgr.Flow(r.URL.Query().Get("authFlow"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "expired"})
@@ -223,10 +381,12 @@ func (h *Handlers) loginStatus(w http.ResponseWriter, r *http.Request) {
 		if p.State != "" {
 			redir += "&state=" + url.QueryEscape(p.State)
 		}
-		h.store.DeletePending(flowID)
-		h.mgr.EndFlow(flowID)
+		h.endFlow(flowID)
 		writeJSON(w, http.StatusOK, map[string]any{"state": "open", "redirect": redir})
 		return
+	}
+	if state == "timeout" || state == "error" {
+		h.endFlow(flowID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"state": state, "error": errMsg})
 }
@@ -258,15 +418,16 @@ func (h *Handlers) challenge(w http.ResponseWriter) {
 // ---- helpers ----
 
 func allowedRedirect(c *Client, redirectURI string) bool {
-	if len(c.RedirectURIs) == 0 {
-		return true // client registered without redirect URIs — be lenient
-	}
 	for _, u := range c.RedirectURIs {
 		if u == redirectURI {
 			return true
 		}
 	}
 	return false
+}
+
+func sameResource(a, b string) bool {
+	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }
 
 func issueAndWrite(ctx context.Context, w http.ResponseWriter, s *Store, clientID, sub, resource string, scopes []string) {
