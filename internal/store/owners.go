@@ -85,8 +85,7 @@ func (s *Store) Unbind(ctx context.Context, owner string) error {
 }
 
 // DeleteAccountData removes everything this server stored for account: history,
-// chats, forms, pending webhook deliveries, the logout marker, and whatsmeow's
-// privacy tokens (the only whatsmeow table not cleared by deleting the device
+// chats, forms, pending webhook deliveries and whatsmeow's privacy tokens (the only whatsmeow table not cleared by deleting the device
 // row). account must be bare phone digits.
 func (s *Store) DeleteAccountData(ctx context.Context, account string) error {
 	if !isDigits(account) {
@@ -101,7 +100,6 @@ func (s *Store) DeleteAccountData(ctx context.Context, account string) error {
 		{`DELETE FROM chats WHERE account_jid IN (?,?)`, []any{account, jid}},
 		{`DELETE FROM forms WHERE account_jid IN (?,?)`, []any{account, jid}},
 		{`DELETE FROM webhook_outbox WHERE account_jid IN (?,?)`, []any{account, jid}},
-		{`DELETE FROM logged_out_accounts WHERE account_jid IN (?,?)`, []any{account, jid}},
 		{`DELETE FROM whatsmeow_privacy_tokens WHERE our_jid = ? OR our_jid LIKE ?`, []any{jid, account + ":%"}},
 	}
 	tx, err := s.db.BeginTx(ctx, nil)

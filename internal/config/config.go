@@ -55,29 +55,44 @@ type Config struct {
 	MediaAllowedHosts   string
 	SendRatePerMinute   int
 	SendRateBurst       int
+
+	// FormsEnabled mounts /f/* (web forms sent over WhatsApp). Off by default.
+	FormsEnabled bool
+	// OAuthRedirectHosts are the https hosts DCR clients may redirect to.
+	OAuthRedirectHosts []string
 }
 
 const defaultDBURL = "file:whatsapp.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
-// databaseURL prefers DATABASE_URL, then the contents of the file named by
-// DATABASE_URL_FILE (for secrets mounted as files), then a local SQLite file.
-func databaseURL(getenv func(string) string, readFile func(string) ([]byte, error)) (string, error) {
-	if v := getenv("DATABASE_URL"); v != "" {
+// envOrFile returns $key, else the trimmed contents of the file named by
+// ${key}_FILE (secrets mounted as files), else def.
+func envOrFile(getenv func(string) string, readFile func(string) ([]byte, error), key, def string) (string, error) {
+	if v := getenv(key); v != "" {
 		return v, nil
 	}
-	path := getenv("DATABASE_URL_FILE")
+	path := getenv(key + "_FILE")
 	if path == "" {
-		return defaultDBURL, nil
+		return def, nil
 	}
 	b, err := readFile(path)
 	if err != nil {
-		return "", fmt.Errorf("DATABASE_URL_FILE: %w", err)
+		return "", fmt.Errorf("%s_FILE: %w", key, err)
 	}
 	v := strings.TrimSpace(string(b))
 	if v == "" {
-		return "", fmt.Errorf("DATABASE_URL_FILE %s is empty", path)
+		return "", fmt.Errorf("%s_FILE %s is empty", key, path)
 	}
 	return v, nil
+}
+
+func csv(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envInt(key string, def int) int {
@@ -104,16 +119,21 @@ func Load() (Config, error) {
 	if authMode != AuthOAuth && authMode != AuthGateway {
 		return Config{}, fmt.Errorf("MCP_AUTH_MODE must be %q or %q, got %q", AuthOAuth, AuthGateway, authMode)
 	}
-	dbURL, err := databaseURL(os.Getenv, os.ReadFile)
+	dbURL, err := envOrFile(os.Getenv, os.ReadFile, "DATABASE_URL", defaultDBURL)
 	if err != nil {
 		return Config{}, err
 	}
+	jwtSecret, err := envOrFile(os.Getenv, os.ReadFile, "MCP_JWT_SECRET", "")
+	if err != nil {
+		return Config{}, err
+	}
+	redirectHosts := csv(env("OAUTH_ALLOWED_REDIRECT_HOSTS", "claude.ai,claude.com"))
 	return Config{
 		Mode:       mode,
 		DBURL:      dbURL,
 		Port:       env("PORT", "3000"),
 		PublicURL:  strings.TrimRight(env("PUBLIC_URL", "http://localhost:3000"), "/"),
-		JWTSecret:  os.Getenv("MCP_JWT_SECRET"),
+		JWTSecret:  jwtSecret,
 		DeviceName: env("WA_DEVICE_NAME", "WhatsApp MCP"),
 
 		InboundWebhookURL:      os.Getenv("INBOUND_WEBHOOK_URL"),
@@ -129,6 +149,8 @@ func Load() (Config, error) {
 		MediaAllowedHosts:   os.Getenv("MEDIA_URL_ALLOWED_HOSTS"),
 		SendRatePerMinute:   envInt("SEND_RATE_PER_MINUTE", 20),
 		SendRateBurst:       envInt("SEND_RATE_BURST", 5),
+		FormsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("FORMS_ENABLED")), "true"),
+		OAuthRedirectHosts:  redirectHosts,
 	}, nil
 }
 

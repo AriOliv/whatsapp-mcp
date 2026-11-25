@@ -96,7 +96,7 @@ func TestDeleteAccountDataRemovesOnlyThatAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tables := []string{"messages", "chats", "forms", "webhook_outbox", "logged_out_accounts"}
+	tables := []string{"messages", "chats", "forms", "webhook_outbox"}
 	for _, tbl := range tables {
 		if n := countWhere(t, st, tbl, "account_jid", gone); n != 0 {
 			t.Errorf("%s still has %d row(s) for the deleted account", tbl, n)

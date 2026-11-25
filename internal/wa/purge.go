@@ -39,26 +39,61 @@ func (m *Manager) Purge(ctx context.Context, account string) (unlinked bool, err
 	if cli != nil {
 		unlinked = m.unlink(ctx, cli)
 	}
+	if err := m.deleteStored(ctx, account); err != nil {
+		return unlinked, err
+	}
+	if m.store != nil {
+		if err := m.store.ClearLoggedOut(ctx, account); err != nil {
+			return unlinked, fmt.Errorf("purge: %w", err)
+		}
+	}
+	return unlinked, nil
+}
+
+// dropUnlinkedAccount deletes the stored data of an account WhatsApp unlinked
+// from the phone side. The needs_repair marker stays so health still counts it.
+func (m *Manager) dropUnlinkedAccount(account string) {
+	m.mu.Lock()
+	if m.purged == nil {
+		m.purged = map[string]bool{}
+	}
+	m.purged[account] = true
+	m.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := m.deleteStored(ctx, account); err != nil {
+		m.log.Errorf("deleting data of unlinked account %s failed: %v", maskPhone(account), err)
+	}
+}
+
+// deleteStored removes every whatsmeow device row of account plus this
+// server's data for it, and runs the purge hook.
+func (m *Manager) deleteStored(ctx context.Context, account string) error {
 	if m.container != nil {
 		devices, err := m.container.GetAllDevices(ctx)
 		if err != nil {
-			return unlinked, fmt.Errorf("purge: list devices: %w", err)
+			return fmt.Errorf("purge: list devices: %w", err)
 		}
 		for _, dev := range devices {
 			if accountKey(dev.ID) != account {
 				continue
 			}
 			if err := m.container.DeleteDevice(ctx, dev); err != nil {
-				return unlinked, fmt.Errorf("purge: delete device: %w", err)
+				return fmt.Errorf("purge: delete device: %w", err)
 			}
 		}
 	}
 	if m.store != nil {
 		if err := m.store.DeleteAccountData(ctx, account); err != nil {
-			return unlinked, fmt.Errorf("purge: %w", err)
+			return fmt.Errorf("purge: %w", err)
 		}
 	}
-	return unlinked, nil
+	if m.purgeHook != nil {
+		if err := m.purgeHook(ctx, account); err != nil {
+			return fmt.Errorf("purge: %w", err)
+		}
+	}
+	return nil
 }
 
 // unlink asks WhatsApp to remove cli's companion device, waiting briefly for a

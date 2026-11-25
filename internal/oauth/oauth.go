@@ -109,18 +109,27 @@ type Store struct {
 	issuer    string
 	resource  string
 	nowFn     func() time.Time
+
+	// maxClients caps registered clients; the oldest is evicted past it.
+	// Clients are only needed until their first code exchange, and a
+	// client that lost its registration simply registers again.
+	maxClients  int
+	clientOrder []string
 }
+
+const defaultMaxClients = 500
 
 func NewStore(jwtSecret, issuer, resource string, db *sql.DB, hasDevice func(string) bool) *Store {
 	return &Store{
-		clients:   map[string]*Client{},
-		pending:   map[string]*Pending{},
-		codes:     map[string]*AuthCode{},
-		db:        db,
-		hasDevice: hasDevice,
-		jwtKey:    []byte(jwtSecret),
-		issuer:    issuer,
-		resource:  resource,
+		clients:    map[string]*Client{},
+		pending:    map[string]*Pending{},
+		codes:      map[string]*AuthCode{},
+		db:         db,
+		hasDevice:  hasDevice,
+		jwtKey:     []byte(jwtSecret),
+		issuer:     issuer,
+		resource:   resource,
+		maxClients: defaultMaxClients,
 	}
 }
 
@@ -220,8 +229,13 @@ func isDuplicateColumnErr(err error) bool {
 func (s *Store) RegisterClient(redirectURIs []string, name string) *Client {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for len(s.clientOrder) >= s.maxClients {
+		delete(s.clients, s.clientOrder[0])
+		s.clientOrder = s.clientOrder[1:]
+	}
 	c := &Client{ID: "wa_" + randHex(12), RedirectURIs: redirectURIs, Name: name}
 	s.clients[c.ID] = c
+	s.clientOrder = append(s.clientOrder, c.ID)
 	return c
 }
 
@@ -391,7 +405,7 @@ func (s *Store) RotateRefresh(ctx context.Context, token string) (*Tokens, error
 	if resource == "" {
 		resource = s.resource
 	}
-	access, err := s.mintAccess(now, r.ClientID, r.Sub, resource, r.Scopes)
+	access, err := s.mintAccess(now, r.ClientID, r.Sub, r.Scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -437,12 +451,11 @@ func (s *Store) newRefresh(ctx context.Context, now time.Time, clientID, sub, re
 	return token, err
 }
 
-func (s *Store) mintAccess(now time.Time, clientID, sub, resource string, scopes []string) (string, error) {
-	if resource == "" {
-		resource = s.resource
-	}
+// mintAccess always targets this server's own resource: the stored or
+// requested resource never widens a token's audience.
+func (s *Store) mintAccess(now time.Time, clientID, sub string, scopes []string) (string, error) {
 	claims := jwt.MapClaims{
-		"iss": s.issuer, "aud": resource, "sub": sub,
+		"iss": s.issuer, "aud": s.resource, "sub": sub,
 		"iat": now.Unix(), "exp": now.Add(AccessTTL).Unix(),
 		"jti":       randHex(16),
 		"client_id": clientID, "scope": joinScopes(scopes),
@@ -466,7 +479,7 @@ func (s *Store) Issue(ctx context.Context, clientID, sub, resource string, scope
 		resource = s.resource
 	}
 	now := s.now()
-	access, err := s.mintAccess(now, clientID, sub, resource, scopes)
+	access, err := s.mintAccess(now, clientID, sub, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -481,6 +494,8 @@ func (s *Store) Issue(ctx context.Context, clientID, sub, resource string, scope
 func (s *Store) Verify(token string) (string, error) {
 	opts := []jwt.ParserOption{
 		jwt.WithIssuer(s.issuer),
+		jwt.WithAudience(s.resource),
+		jwt.WithExpirationRequired(),
 		jwt.WithValidMethods([]string{"HS256"}),
 	}
 	if s.nowFn != nil {
@@ -504,6 +519,13 @@ func (s *Store) Verify(token string) (string, error) {
 		return "", errors.New("missing sub")
 	}
 	return sub, nil
+}
+
+// RevokeSub deletes every refresh token of sub, so a logged-out account
+// cannot mint new access tokens.
+func (s *Store) RevokeSub(ctx context.Context, sub string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM oauth_refresh_tokens WHERE sub=$1`, sub)
+	return err
 }
 
 func joinScopes(scopes []string) string {

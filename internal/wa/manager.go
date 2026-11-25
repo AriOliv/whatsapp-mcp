@@ -46,6 +46,7 @@ type Manager struct {
 
 	historyDefaultOff bool
 	fetchURL          func(ctx context.Context, url string) ([]byte, error)
+	purgeHook         func(ctx context.Context, account string) error
 
 	// Connection churn counters, exposed by /healthz. The socket drops and
 	// re-authenticates on its own many times a day; without a count there is no
@@ -130,6 +131,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		historySyncOff:      historyOff,
 		strict:              o.strict,
 		fetchURL:            o.fetchURL,
+		purgeHook:           o.purgeHook,
 		purged:              map[string]bool{},
 		outboxKick:          make(chan struct{}, 1),
 		pictures:            newPictureCache(),
@@ -680,7 +682,8 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			// loggedOut so /healthz can say "needs_repair" instead of dropping
 			// the account from the listing entirely — which is how one account
 			// sat dead for hours with nobody noticing.
-			m.log.Errorf("account %s was logged out (device removed) — needs re-pairing, reason: %v", key, v.Reason)
+			m.log.Errorf("account %s was logged out (device removed) — needs re-pairing, reason: %v", maskPhone(key), v.Reason)
+			go m.dropUnlinkedAccount(key)
 		case *events.Connected:
 			key := accountKey(cli.Store.ID)
 			n := m.connects.Add(1)
@@ -1522,22 +1525,21 @@ func (m *Manager) InstanceState(ctx context.Context, account string) (map[string
 	return map[string]any{"jid": jid, "connected": cli.IsConnected(), "loggedIn": cli.IsLoggedIn()}, nil
 }
 
-// Logout unlinks the account's device.
+// Logout unlinks the account's device and deletes everything stored for it.
 func (m *Manager) Logout(ctx context.Context, account string) error {
-	cli, err := m.clientFor(ctx, account)
+	m.mu.RLock()
+	key := m.resolveLocked(account)
+	m.mu.RUnlock()
+	if key == "" {
+		return fmt.Errorf("no connected WhatsApp account to log out")
+	}
+	unlinked, err := m.Purge(ctx, key)
 	if err != nil {
 		return err
 	}
-	if err := cli.Logout(ctx); err != nil {
-		return err
+	if !unlinked {
+		return fmt.Errorf("stored data deleted, but WhatsApp could not be reached: remove the device under Linked devices on the phone")
 	}
-	key := accountKey(cli.Store.ID)
-	m.mu.Lock()
-	delete(m.clients, key)
-	if m.def == key {
-		m.def = ""
-	}
-	m.mu.Unlock()
 	return nil
 }
 

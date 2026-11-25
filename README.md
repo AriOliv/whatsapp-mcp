@@ -124,6 +124,21 @@ Besides the per-user OAuth `/mcp`, HTTP mode can expose `/api/*` for one trusted
 
 The full contract is in [`openapi.json`](openapi.json) (OpenAPI 3.1): open it in [Swagger Editor](https://editor.swagger.io) or import it in Postman (*Import → File*), then set the bearer token on the collection. A test fails if a route is added without being documented there.
 
+## OAuth mode (Go server)
+
+With `MCP_MODE=http` and the default `MCP_AUTH_MODE=oauth`, the server is its own OAuth 2.1 authorization server and WhatsApp pairing is the login, so the token's `sub` is the paired number. Clients such as Claude Code register themselves (DCR) and use a loopback redirect.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PUBLIC_URL` | `http://localhost:3000` | Issuer. Access tokens carry `aud` = `PUBLIC_URL/mcp` and `/mcp` rejects any other audience |
+| `MCP_JWT_SECRET` / `MCP_JWT_SECRET_FILE` | none | Signing secret (32+ chars), or a file holding it |
+| `OAUTH_ALLOWED_REDIRECT_HOSTS` | `claude.ai,claude.com` | https hosts a registered client may redirect to. http redirects are only accepted on `localhost`, `127.0.0.1` or `[::1]` with an explicit port |
+| `FORMS_ENABLED` | `false` | Mounts `/f/*` for web forms sent over WhatsApp |
+| `GATEWAY_API_TOKEN` | none | Mounts `/api/*` only when set |
+| `MEDIA_URL_ALLOWED_HOSTS`, `SEND_RATE_PER_MINUTE`, `SEND_RATE_BURST`, `WA_HISTORY_SYNC` | see gateway mode | Same meaning as in gateway mode. Media by URL goes through the SSRF-safe fetcher and history sync is off by default in every HTTP mode |
+
+`/register`, `/authorize` and `/login*` are rate limited per client address, registered clients are capped, and pairing flows are capped globally and per address and torn down after five minutes. `/healthz` reports counts only. Logging an account out, from the tool or from the phone, deletes what the server stored for it and revokes its refresh tokens
+
 ## Gateway auth mode (Go server)
 
 When the server runs behind an MCP gateway that already signs users in, set `MCP_MODE=http` and `MCP_AUTH_MODE=gateway`. The gateway must send `Authorization: Bearer <JWT>` on every MCP request, signed RS256 with a key published at its JWKS URL, carrying `kid` in the header and `iss`, `aud`, `exp` and `sub` (the user's email) in the claims. Every `tools/call` needs that user token. The gateway's own catalog and health traffic (`initialize`, `ping`, `notifications/*`, `tools/list`, alone or batched together, and session GET and DELETE) is served without one, and if it carries a token that token must still be a valid gateway token, whatever its `sub`. A batch that mixes `tools/call` with those methods needs the user token. The built-in OAuth server, the login and pairing pages, `/api/*` and `/f/*` are not mounted in this mode. Only `/mcp` and `/healthz` exist, and `/healthz` returns `{"ok":true}` and nothing else.

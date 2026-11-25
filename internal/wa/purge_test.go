@@ -5,12 +5,15 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
 	appstore "github.com/AriOliv/whatsapp-mcp/internal/store"
@@ -169,5 +172,82 @@ func TestMediaURLsGoThroughTheConfiguredFetcher(t *testing.T) {
 	}
 	if b, err := m.loadBytes(context.Background(), "aGk="); err != nil || string(b) != "hi" {
 		t.Fatalf("base64 media must not hit the fetcher: %q, %v", b, err)
+	}
+}
+
+// Every way an account is logged out must take its stored data with it: the
+// logout tool (Logout) and WhatsApp unlinking the device from the phone.
+func TestLogoutPathsDeleteStoredData(t *testing.T) {
+	cases := []struct {
+		name       string
+		logout     func(t *testing.T, m *Manager, account string)
+		keepMarker bool
+	}{
+		{"logout tool", func(t *testing.T, m *Manager, account string) {
+			if err := m.Logout(context.Background(), account); err == nil || !strings.Contains(err.Error(), "could not be reached") {
+				t.Fatalf("with no socket the user must be told to unlink on the phone, got %v", err)
+			}
+		}, false},
+		{"unlinked from the phone", func(t *testing.T, m *Manager, account string) {
+			jid := types.NewADJID(account, 0, 3)
+			cli := &whatsmeow.Client{Store: &store.Device{ID: &jid}}
+			m.mu.Lock()
+			m.clients[account] = cli
+			m.mu.Unlock()
+			m.handler(cli)(&events.LoggedOut{})
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			m, st := newPurgeManager(t)
+			var hooked []string
+			var mu sync.Mutex
+			m.purgeHook = func(_ context.Context, account string) error {
+				mu.Lock()
+				hooked = append(hooked, account)
+				mu.Unlock()
+				return nil
+			}
+			const gone, kept = "5511111111111", "5522222222222"
+			saveDevice(t, m, gone, 3)
+			saveDevice(t, m, kept, 4)
+			for _, acct := range []string{gone, kept} {
+				if err := st.SaveMessage(ctx, acct, appstore.Message{ID: "m-" + acct, ChatJID: "x@s.whatsapp.net", TS: 1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := st.MarkLoggedOut(ctx, gone, "earlier", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			c.logout(t, m, gone)
+
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				msgs, _ := st.ListMessages(ctx, gone, "x@s.whatsapp.net", 10)
+				devices, _ := m.container.GetAllDevices(ctx)
+				if len(msgs) == 0 && len(devices) == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("after logout %d message(s) and %d device(s) remain", len(msgs), len(devices))
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if msgs, _ := st.ListMessages(ctx, kept, "x@s.whatsapp.net", 10); len(msgs) != 1 {
+				t.Fatal("another account's history was touched")
+			}
+			mu.Lock()
+			gotHook := len(hooked) == 1 && hooked[0] == gone
+			mu.Unlock()
+			if !gotHook {
+				t.Fatalf("purge hook calls = %v, want [%s]", hooked, gone)
+			}
+			marks, _ := st.LoggedOutAccounts(ctx)
+			if _, marked := marks[gone]; marked != c.keepMarker {
+				t.Fatalf("needs-repair marker present = %v, want %v", marked, c.keepMarker)
+			}
+		})
 	}
 }
