@@ -90,6 +90,9 @@ func (m *Manager) enqueue(it ingestItem) {
 // writeMessage stores one message. It builds its own context because the
 // writer's context is already cancelled during the shutdown flush.
 func (m *Manager) writeMessage(it ingestItem) {
+	if m.isPurged(it.account) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), ingestWriteTimeout)
 	defer cancel()
 	save := m.store.SaveMessage
