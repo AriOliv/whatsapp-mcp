@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,9 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/AriOliv/whatsapp-mcp/internal/config"
-	"github.com/AriOliv/whatsapp-mcp/internal/formweb"
 	"github.com/AriOliv/whatsapp-mcp/internal/gateway"
-	"github.com/AriOliv/whatsapp-mcp/internal/httpapi"
 	"github.com/AriOliv/whatsapp-mcp/internal/mcpserver"
 	"github.com/AriOliv/whatsapp-mcp/internal/oauth"
 	"github.com/AriOliv/whatsapp-mcp/internal/safehttp"
@@ -44,11 +41,27 @@ func main() {
 		fatal(err)
 	}
 
+	settings := settingsFor(cfg)
 	var waOpts []wa.Option
-	if gatewayMode {
-		fetcher := safehttp.New(safehttp.Options{AllowedHosts: gateway.ParseDomains(cfg.MediaAllowedHosts)})
-		waOpts = append(waOpts, wa.WithStrictAccounts(), wa.WithHistorySyncDefaultOff(), wa.WithMediaFetcher(fetcher.Fetch))
+	if settings.strictAccounts {
+		waOpts = append(waOpts, wa.WithStrictAccounts())
 	}
+	if settings.historyOff {
+		waOpts = append(waOpts, wa.WithHistorySyncDefaultOff())
+	}
+	if settings.safeMedia {
+		fetcher := safehttp.New(safehttp.Options{AllowedHosts: gateway.ParseDomains(cfg.MediaAllowedHosts)})
+		waOpts = append(waOpts, wa.WithMediaFetcher(fetcher.Fetch))
+	}
+	// Refresh tokens go with a purged account. The store is created after the
+	// manager (it needs HasDevice), hence the late-bound pointer.
+	var oauthStore *oauth.Store
+	waOpts = append(waOpts, wa.WithPurgeHook(func(ctx context.Context, account string) error {
+		if oauthStore == nil {
+			return nil
+		}
+		return oauthStore.RevokeSub(ctx, account)
+	}))
 	mgr, err := wa.New(ctx, db, cfg.IsPostgres(), st, cfg.DeviceName, waOpts...)
 	if err != nil {
 		fatal(err)
@@ -111,52 +124,31 @@ func main() {
 	switch cfg.Mode {
 	case config.ModeHTTP:
 		if len(cfg.JWTSecret) < 32 {
-			fatal(fmt.Errorf("MCP_JWT_SECRET must be set (>=32 chars) for HTTP mode"))
+			fatal(fmt.Errorf("MCP_JWT_SECRET (or MCP_JWT_SECRET_FILE) must hold >=32 chars for HTTP mode"))
 		}
-		mux := http.NewServeMux()
-		oauthStore := oauth.NewStore(cfg.JWTSecret, cfg.PublicURL, cfg.PublicURL+"/mcp", db, mgr.HasDevice)
+		if settings.sendLimit {
+			mcpserver.LimitSends(srv, mcpserver.NewSendLimiter(cfg.SendRatePerMinute, cfg.SendRateBurst))
+		}
+		oauthStore = oauth.NewStore(cfg.JWTSecret, cfg.PublicURL, cfg.PublicURL+"/mcp", db, mgr.HasDevice)
 		if err := oauthStore.Init(ctx); err != nil {
 			fatal(err)
 		}
-		handlers := oauth.NewHandlers(oauthStore, mgr, cfg.PublicURL)
-		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-		handlers.Register(mux, mcpHandler) // mounts bearer-guarded /mcp + OAuth + login routes
-		if err := mgr.InitForms(ctx, cfg.PublicURL); err != nil {
-			fatal(err)
-		}
-		formweb.New(mgr, []byte(cfg.JWTSecret)).Register(mux) // GET/POST /f/{token}: web forms sent over WhatsApp
-		if api := httpapi.New(mgr, cfg.GatewayAPIToken, gwAccounts); api != nil {
-			api.Register(mux) // /api/* for the trusted gateway backend (static bearer, allowed accounts only)
-			fmt.Fprintf(os.Stderr, "gateway API on /api/* for %d account(s)\n", len(gwAccounts))
-		}
-		// /healthz doubles as the stability probe: per-account socket state plus
-		// reconnect counts since boot. Liveness only needs the 200, but without
-		// the body there is no way to tell "reconnected 80 times and recovered"
-		// from "one account has been down for an hour".
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-			accounts, connects, disconnects := mgr.Health()
-			live, needRepair := 0, 0
-			for _, a := range accounts {
-				if a.State == wa.AccountNeedsRepair {
-					needRepair++
-				} else {
-					live++
-				}
+		for _, init := range []func(context.Context) error{st.InitForms, st.InitOutbox} {
+			if err := init(ctx); err != nil {
+				fatal(err)
 			}
-			w.Header().Set("content-type", "application/json")
-			// `ok` stays true with an unlinked account: the server is healthy and
-			// liveness must not restart the pod over something only a re-pair
-			// fixes. needs_repair is what a dashboard alerts on.
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":           true,
-				"accounts":     accounts,
-				"paired":       live,
-				"needs_repair": needRepair,
-				"connects":     connects,
-				"disconnects":  disconnects,
-			})
-		})
-		httpSrv := &http.Server{Addr: ":" + cfg.Port, Handler: mux}
+		}
+		if cfg.FormsEnabled {
+			if err := mgr.InitForms(ctx, cfg.PublicURL); err != nil {
+				fatal(err)
+			}
+		}
+		mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+		httpSrv := &http.Server{
+			Addr:              ":" + cfg.Port,
+			Handler:           oauthMux(cfg, oauthStore, mgr, mcpHandler, gwAccounts),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
 		go func() { <-ctx.Done(); _ = httpSrv.Close() }()
 		fmt.Fprintf(os.Stderr, "HTTP MCP (OAuth) on %s/mcp\n", cfg.PublicURL)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

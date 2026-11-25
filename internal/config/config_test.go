@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDatabaseURL(t *testing.T) {
+func TestEnvOrFile(t *testing.T) {
 	dir := t.TempDir()
 	dsnFile := filepath.Join(dir, "dsn")
 	if err := os.WriteFile(dsnFile, []byte("  postgres://u:p@db:5432/wa?sslmode=require\n"), 0o600); err != nil {
@@ -30,7 +30,7 @@ func TestDatabaseURL(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := databaseURL(func(k string) string { return c.env[k] }, os.ReadFile)
+			got, err := envOrFile(func(k string) string { return c.env[k] }, os.ReadFile, "DATABASE_URL", defaultDBURL)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
 			}
@@ -38,5 +38,46 @@ func TestDatabaseURL(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestJWTSecretFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jwt")
+	if err := os.WriteFile(path, []byte("\n  0123456789abcdef0123456789abcdef  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCP_JWT_SECRET", "")
+	t.Setenv("MCP_JWT_SECRET_FILE", path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.JWTSecret != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("JWTSecret = %q, want the trimmed file contents", cfg.JWTSecret)
+	}
+	t.Setenv("MCP_JWT_SECRET", "from-env-0123456789abcdef0123456789")
+	if cfg, _ := Load(); cfg.JWTSecret != "from-env-0123456789abcdef0123456789" {
+		t.Fatalf("MCP_JWT_SECRET must win over the file, got %q", cfg.JWTSecret)
+	}
+}
+
+func TestFormsOffAndClaudeRedirectHostsByDefault(t *testing.T) {
+	t.Setenv("FORMS_ENABLED", "")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_HOSTS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FormsEnabled {
+		t.Fatal("forms must be off unless FORMS_ENABLED=true")
+	}
+	if len(cfg.OAuthRedirectHosts) != 2 || cfg.OAuthRedirectHosts[0] != "claude.ai" || cfg.OAuthRedirectHosts[1] != "claude.com" {
+		t.Fatalf("default redirect hosts = %v", cfg.OAuthRedirectHosts)
+	}
+	t.Setenv("FORMS_ENABLED", "true")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_HOSTS", " Example.com , ")
+	cfg, _ = Load()
+	if !cfg.FormsEnabled || len(cfg.OAuthRedirectHosts) != 1 || cfg.OAuthRedirectHosts[0] != "example.com" {
+		t.Fatalf("explicit settings not applied: forms=%v hosts=%v", cfg.FormsEnabled, cfg.OAuthRedirectHosts)
 	}
 }

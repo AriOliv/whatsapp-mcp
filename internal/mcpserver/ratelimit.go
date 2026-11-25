@@ -69,6 +69,11 @@ func (l *SendLimiter) allow(account string) (bool, time.Duration) {
 	return true, 0
 }
 
+// LimitSends adds the per-account send budget to s.
+func LimitSends(s *mcp.Server, l *SendLimiter) {
+	s.AddReceivingMiddleware(limitSends(l))
+}
+
 func limitSends(l *SendLimiter) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
