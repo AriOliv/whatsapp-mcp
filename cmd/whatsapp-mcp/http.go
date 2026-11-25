@@ -67,7 +67,7 @@ func healthHandler(src healthSource) http.HandlerFunc {
 // only when explicitly enabled.
 func oauthMux(cfg config.Config, st *oauth.Store, mgr *wa.Manager, mcpHandler http.Handler, gwAccounts map[string]bool) *http.ServeMux {
 	mux := http.NewServeMux()
-	oauth.NewHandlers(st, mgr, cfg.PublicURL, oauth.Config{AllowedRedirectHosts: cfg.OAuthRedirectHosts}).
+	oauth.NewHandlers(st, mgr, cfg.PublicURL, oauth.Config{AllowedRedirectHosts: cfg.OAuthRedirectHosts, TrustProxyHops: cfg.TrustProxyHops}).
 		Register(mux, mcpHandler)
 	if cfg.FormsEnabled {
 		formweb.New(mgr, []byte(cfg.JWTSecret)).Register(mux)

@@ -60,6 +60,9 @@ type Config struct {
 	FormsEnabled bool
 	// OAuthRedirectHosts are the https hosts DCR clients may redirect to.
 	OAuthRedirectHosts []string
+	// TrustProxyHops is how many trusted reverse proxies append to
+	// X-Forwarded-For; 0 keys rate limits on the TCP peer.
+	TrustProxyHops int
 }
 
 const defaultDBURL = "file:whatsapp.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
@@ -151,6 +154,7 @@ func Load() (Config, error) {
 		SendRateBurst:       envInt("SEND_RATE_BURST", 5),
 		FormsEnabled:        strings.EqualFold(strings.TrimSpace(os.Getenv("FORMS_ENABLED")), "true"),
 		OAuthRedirectHosts:  redirectHosts,
+		TrustProxyHops:      envInt("TRUST_PROXY_HOPS", 0),
 	}, nil
 }
 

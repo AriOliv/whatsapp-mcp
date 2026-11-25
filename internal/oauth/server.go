@@ -33,6 +33,9 @@ type Config struct {
 	MaxFlows             int
 	MaxFlowsPerIP        int
 	FlowTTL              time.Duration
+	// TrustProxyHops is how many reverse proxies in front of the server append
+	// to X-Forwarded-For. 0 ignores the header.
+	TrustProxyHops int
 }
 
 const (
@@ -96,7 +99,7 @@ func NewHandlers(store *Store, mgr Pairer, publicURL string, cfg Config) *Handle
 // pageLimited wraps a login-page endpoint with the polling rate limit.
 func (h *Handlers) pageLimited(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !h.pageLimit.allow(clientIP(r)) {
+		if !h.pageLimit.allow(clientIP(r, h.cfg.TrustProxyHops)) {
 			tooMany(w)
 			return
 		}
@@ -191,7 +194,7 @@ func (h *Handlers) authServerMeta(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := clientIP(r, h.cfg.TrustProxyHops)
 	if !h.startLimit.allow(ip) {
 		tooMany(w)
 		return
@@ -288,7 +291,7 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.registerLimit.allow(clientIP(r)) {
+	if !h.registerLimit.allow(clientIP(r, h.cfg.TrustProxyHops)) {
 		tooMany(w)
 		return
 	}
@@ -345,7 +348,7 @@ func (h *Handlers) loginQR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) loginPairing(w http.ResponseWriter, r *http.Request) {
-	if !h.startLimit.allow(clientIP(r)) {
+	if !h.startLimit.allow(clientIP(r, h.cfg.TrustProxyHops)) {
 		tooMany(w)
 		return
 	}

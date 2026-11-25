@@ -114,3 +114,42 @@ func TestOAuthRouteSurface(t *testing.T) {
 		})
 	}
 }
+
+func TestOAuthMuxHonorsTrustProxyHops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dsn := "file:" + filepath.Join(t.TempDir(), "p.db") + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	st, db, err := store.Open(dsn, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := wa.New(ctx, db, false, st, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauthStore := oauth.NewStore(strings.Repeat("k", 32), "https://mcp.example.com", "https://mcp.example.com/mcp", db, mgr.HasDevice)
+	if err := oauthStore.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{PublicURL: "https://mcp.example.com", JWTSecret: strings.Repeat("k", 32), TrustProxyHops: 1}
+	mux := oauthMux(cfg, oauthStore, mgr, http.NotFoundHandler(), nil)
+	register := func(client string) int {
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"redirect_uris":["http://127.0.0.1:33418/cb"]}`))
+		req.RemoteAddr = "127.0.0.1:50000"
+		req.Header.Set("X-Forwarded-For", client)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for i := 0; register("100.64.0.1") != http.StatusTooManyRequests; i++ {
+		if i > 50 {
+			t.Fatal("never rate limited")
+		}
+	}
+	if got := register("100.64.0.2"); got != http.StatusCreated {
+		t.Fatalf("TRUST_PROXY_HOPS did not reach the OAuth handlers: second client got %d", got)
+	}
+}

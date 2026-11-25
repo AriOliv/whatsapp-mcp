@@ -81,3 +81,19 @@ func TestFormsOffAndClaudeRedirectHostsByDefault(t *testing.T) {
 		t.Fatalf("explicit settings not applied: forms=%v hosts=%v", cfg.FormsEnabled, cfg.OAuthRedirectHosts)
 	}
 }
+
+func TestTrustProxyHops(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want int
+	}{{"", 0}, {"1", 1}, {"2", 2}, {"-1", 0}, {"x", 0}} {
+		t.Setenv("TRUST_PROXY_HOPS", c.env)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.TrustProxyHops != c.want {
+			t.Errorf("TRUST_PROXY_HOPS=%q -> %d, want %d", c.env, cfg.TrustProxyHops, c.want)
+		}
+	}
+}
