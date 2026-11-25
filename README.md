@@ -133,6 +133,7 @@ With `MCP_MODE=http` and the default `MCP_AUTH_MODE=oauth`, the server is its ow
 | `PUBLIC_URL` | `http://localhost:3000` | Issuer. Access tokens carry `aud` = `PUBLIC_URL/mcp` and `/mcp` rejects any other audience |
 | `MCP_JWT_SECRET` / `MCP_JWT_SECRET_FILE` | none | Signing secret (32+ chars), or a file holding it |
 | `OAUTH_ALLOWED_REDIRECT_HOSTS` | `claude.ai,claude.com` | https hosts a registered client may redirect to. http redirects are only accepted on `localhost`, `127.0.0.1` or `[::1]` with an explicit port |
+| `TRUST_PROXY_HOPS` | `0` | Reverse proxies in front of the server that append to `X-Forwarded-For` (1 behind `tailscale serve`). Rate limits and pairing caps then key on the client address the outermost one recorded. With 0 the header is ignored |
 | `FORMS_ENABLED` | `false` | Mounts `/f/*` for web forms sent over WhatsApp |
 | `GATEWAY_API_TOKEN` | none | Mounts `/api/*` only when set |
 | `MEDIA_URL_ALLOWED_HOSTS`, `SEND_RATE_PER_MINUTE`, `SEND_RATE_BURST`, `WA_HISTORY_SYNC` | see gateway mode | Same meaning as in gateway mode. Media by URL goes through the SSRF-safe fetcher and history sync is off by default in every HTTP mode |

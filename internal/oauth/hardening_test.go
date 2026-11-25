@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -360,5 +361,77 @@ func TestRevokeSubDropsOnlyThatAccountsRefreshTokens(t *testing.T) {
 	}
 	if _, err := st.RotateRefresh(ctx, kept.RefreshToken); err != nil {
 		t.Fatalf("another account's refresh token was revoked: %v", err)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	cases := []struct {
+		name string
+		hops int
+		xff  []string
+		want string
+	}{
+		{"no trust ignores the header", 0, []string{"100.64.0.9"}, "127.0.0.1"},
+		{"one hop takes the rightmost entry", 1, []string{"6.6.6.6, 100.64.0.9"}, "100.64.0.9"},
+		{"entries across repeated headers", 1, []string{"6.6.6.6", "100.64.0.9"}, "100.64.0.9"},
+		{"two hops skip the inner proxy", 2, []string{"6.6.6.6, 100.64.0.9, 10.0.0.2"}, "100.64.0.9"},
+		{"missing header falls back to the peer", 1, nil, "127.0.0.1"},
+		{"too few entries fall back to the peer", 2, []string{"100.64.0.9"}, "127.0.0.1"},
+		{"garbage falls back to the peer", 1, []string{"not-an-ip"}, "127.0.0.1"},
+		{"ipv6 entry", 1, []string{"fd7a:115c:a1e0::1"}, "fd7a:115c:a1e0::1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:50000"
+			for _, v := range c.xff {
+				req.Header.Add("X-Forwarded-For", v)
+			}
+			if got := clientIP(req, c.hops); got != c.want {
+				t.Fatalf("clientIP = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// Behind tailscale serve every request arrives from the proxy's loopback
+// address. With hops = 1 two tailnet clients get their own budgets; with 0 a
+// client cannot dodge its budget by inventing X-Forwarded-For values.
+func TestRateLimitsBehindAProxy(t *testing.T) {
+	ok := `{"redirect_uris":["` + loopbackURI + `"]}`
+	register := func(h http.Handler, xff string) int {
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(ok))
+		req.RemoteAddr = "127.0.0.1:50000"
+		req.Header.Set("X-Forwarded-For", xff)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	newMux := func(hops int) http.Handler {
+		mux := http.NewServeMux()
+		NewHandlers(newHardenedStore(t), newFakePairer(), testIssuer, Config{TrustProxyHops: hops}).Register(mux, http.NotFoundHandler())
+		return mux
+	}
+
+	proxied := newMux(1)
+	for i := 0; register(proxied, "100.64.0.1") != http.StatusTooManyRequests; i++ {
+		if i > 50 {
+			t.Fatal("one client behind the proxy was never rate limited")
+		}
+	}
+	if got := register(proxied, "100.64.0.2"); got != http.StatusCreated {
+		t.Fatalf("a second client behind the proxy shares the first one's budget: %d", got)
+	}
+
+	direct := newMux(0)
+	limited := false
+	for i := range 50 {
+		if register(direct, "100.64.1."+strconv.Itoa(i)) == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("with no trusted proxy, varying X-Forwarded-For escaped the rate limit")
 	}
 }

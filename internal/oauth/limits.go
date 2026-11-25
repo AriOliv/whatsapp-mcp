@@ -3,6 +3,8 @@ package oauth
 import (
 	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,14 +42,34 @@ func (l *ipLimiter) allow(ip string) bool {
 	return b.Allow()
 }
 
-// clientIP is the TCP peer address. Forwarding headers are ignored: on a
-// private network the peer is the client, and the headers are client-set.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP is the address limits are keyed on. With trustHops == 0 it is the
+// TCP peer and X-Forwarded-For is ignored, since a client can set it to
+// anything. Behind trustHops proxies that each append the address they saw,
+// it is the X-Forwarded-For entry that many places from the right: the one
+// written by the outermost trusted proxy. A missing or short header falls
+// back to the peer.
+func clientIP(r *http.Request, trustHops int) string {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		peer = r.RemoteAddr
 	}
-	return host
+	if trustHops <= 0 {
+		return peer
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(v, ",") {
+			hops = append(hops, strings.TrimSpace(part))
+		}
+	}
+	if len(hops) < trustHops {
+		return peer
+	}
+	addr, err := netip.ParseAddr(hops[len(hops)-trustHops])
+	if err != nil {
+		return peer
+	}
+	return addr.Unmap().String()
 }
 
 func tooMany(w http.ResponseWriter) {
