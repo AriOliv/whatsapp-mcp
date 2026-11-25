@@ -41,6 +41,11 @@ type Manager struct {
 	clients map[string]*whatsmeow.Client // key: account JID (user part @ server)
 	def     string                       // default account key (stdio)
 	flows   map[string]*PairFlow         // key: OAuth flow id (HTTP pairing)
+	strict  bool                         // "" never resolves to def (see WithStrictAccounts)
+	purged  map[string]bool              // accounts being deleted; late events for them are dropped
+
+	historyDefaultOff bool
+	fetchURL          func(ctx context.Context, url string) ([]byte, error)
 
 	// Connection churn counters, exposed by /healthz. The socket drops and
 	// re-authenticates on its own many times a day; without a count there is no
@@ -82,8 +87,12 @@ type Manager struct {
 
 // New opens the whatsmeow sqlstore, sharing the app's *sql.DB, and sets the
 // linked-device name shown in WhatsApp before any client is created.
-func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceName string) (*Manager, error) {
+func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceName string, opts ...Option) (*Manager, error) {
 	logger := waLog.Stdout("wa", "INFO", true)
+	var o Manager
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	// The device name shown under "Linked devices" comes from DeviceProps.Os,
 	// which is sent during pairing. Must be set before creating clients.
@@ -93,7 +102,7 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		// instead of our Os string. CHROME mirrors what Baileys/Evolution do.
 		store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
 	}
-	historyOff := isHistorySyncDisabled(os.Getenv("WA_HISTORY_SYNC"))
+	historyOff := historySyncOff(os.Getenv("WA_HISTORY_SYNC"), o.historyDefaultOff)
 	if !historyOff && store.DeviceProps.HistorySyncConfig != nil {
 		store.DeviceProps.HistorySyncConfig.OnDemandReady = proto.Bool(true)
 		store.DeviceProps.HistorySyncConfig.CompleteOnDemandReady = proto.Bool(true)
@@ -119,6 +128,9 @@ func New(ctx context.Context, db *sql.DB, isPG bool, st *appstore.Store, deviceN
 		loggedOut:           map[string]time.Time{},
 		flows:               map[string]*PairFlow{},
 		historySyncOff:      historyOff,
+		strict:              o.strict,
+		fetchURL:            o.fetchURL,
+		purged:              map[string]bool{},
 		outboxKick:          make(chan struct{}, 1),
 		pictures:            newPictureCache(),
 		groupNameCache:      newNamesCache(groupNameTTL, logSlowRefresh(logger, "joined groups")),
@@ -313,6 +325,7 @@ func (m *Manager) activatePairedClient(cli *whatsmeow.Client) string {
 			m.def = key
 		}
 		delete(m.loggedOut, key)
+		delete(m.purged, key)
 	}
 	m.mu.Unlock()
 	if key != "" && m.store != nil {
@@ -361,23 +374,27 @@ func (m *Manager) PairInteractive(ctx context.Context) error {
 // caller can surface it. Blocks until paired, timeout, or ctx cancel. `number`
 // is an international number (any punctuation is stripped).
 func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(string)) error {
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, number)
+	_, err := m.PairPhone(ctx, number, onCode, nil)
+	return err
+}
+
+// PairPhone is PairWithCode with an approval step. Once WhatsApp confirms the
+// link, approve (if set) gets the paired account before it is activated; if it
+// returns an error the new device is unlinked and deleted instead. Returns the
+// paired account.
+func (m *Manager) PairPhone(ctx context.Context, number string, onCode func(string), approve func(account string) error) (string, error) {
+	digits := onlyDigits(number)
 	if digits == "" {
-		return fmt.Errorf("invalid phone number %q", number)
+		return "", fmt.Errorf("invalid phone number %q", number)
 	}
 	dev := m.container.NewDevice()
 	cli := m.newClient(dev)
 	qrChan, err := cli.GetQRChannel(ctx)
 	if err != nil {
-		return fmt.Errorf("qr channel: %w", err)
+		return "", fmt.Errorf("qr channel: %w", err)
 	}
 	if err := cli.Connect(); err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return "", fmt.Errorf("connect: %w", err)
 	}
 	requested := false
 	for evt := range qrChan {
@@ -387,23 +404,31 @@ func (m *Manager) PairWithCode(ctx context.Context, number string, onCode func(s
 				requested = true
 				code, err := cli.PairPhone(ctx, digits, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 				if err != nil {
-					return fmt.Errorf("pair phone: %w", err)
+					cli.Disconnect()
+					return "", fmt.Errorf("pair phone: %w", err)
 				}
 				if onCode != nil {
 					onCode(code)
 				}
 			}
 		case "success":
-			key := m.activatePairedClient(cli)
-			fmt.Fprintf(os.Stderr, "\nPaired as %s\n", key)
-			return nil
+			key := accountKey(cli.Store.ID)
+			if approve != nil {
+				if err := approve(key); err != nil {
+					m.discardDevice(cli)
+					return "", err
+				}
+			}
+			m.activatePairedClient(cli)
+			fmt.Fprintf(os.Stderr, "\nPaired as %s\n", maskPhone(key))
+			return key, nil
 		case "timeout":
-			return fmt.Errorf("pairing timed out (code expired) — try again")
+			return "", fmt.Errorf("pairing timed out (code expired) — try again")
 		case "error":
-			return fmt.Errorf("pairing error: %w", evt.Error)
+			return "", fmt.Errorf("pairing error: %w", evt.Error)
 		}
 	}
-	return fmt.Errorf("pairing channel closed")
+	return "", fmt.Errorf("pairing channel closed")
 }
 
 // reconnectGrace is how long clientFor waits for a client that is mid-reconnect
@@ -423,10 +448,16 @@ const reconnectGrace = 20 * time.Second
 func (m *Manager) lookupClient(account string) *whatsmeow.Client {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if account == "" {
-		account = m.def
+	return m.clients[m.resolveLocked(account)]
+}
+
+// resolveLocked maps "" to the default account unless the manager is strict.
+// Callers hold m.mu.
+func (m *Manager) resolveLocked(account string) string {
+	if account == "" && !m.strict {
+		return m.def
 	}
-	return m.clients[account]
+	return account
 }
 
 // clientFor returns the client for an account, waiting out a reconnect in
@@ -438,13 +469,14 @@ func (m *Manager) lookupClient(account string) *whatsmeow.Client {
 // safe, re-sending after an ambiguous failure is not — it duplicates messages.
 func (m *Manager) clientFor(ctx context.Context, account string) (*whatsmeow.Client, error) {
 	m.mu.RLock()
-	if account == "" {
-		account = m.def
-	}
+	account = m.resolveLocked(account)
 	cli := m.clients[account]
 	loggedOutAt, wasLoggedOut := m.loggedOut[account]
 	m.mu.RUnlock()
 	if cli == nil {
+		if m.strict && account == "" {
+			return nil, fmt.Errorf("no WhatsApp account is connected for this caller")
+		}
 		// Distinguish "never paired" from "was paired until WhatsApp unlinked
 		// it": the second needs a re-pair, and saying "pair one first" for an
 		// account the user believes is connected hides that.
@@ -618,6 +650,10 @@ func (m *Manager) handler(cli *whatsmeow.Client) func(any) {
 			key := accountKey(cli.Store.ID)
 			at := time.Now()
 			m.mu.Lock()
+			if m.purged[key] {
+				m.mu.Unlock()
+				return
+			}
 			if current := m.clients[key]; current != nil && current != cli {
 				// A stale companion device for this phone number was unlinked
 				// while another client is active for the same account. Ignore
@@ -770,7 +806,7 @@ func (m *Manager) SendCarousel(ctx context.Context, account, to string, spec Car
 	for i := range spec.Cards {
 		card := &spec.Cards[i]
 		if imgData := strings.TrimSpace(card.Image); imgData != "" {
-			raw, err := loadBytes(ctx, imgData)
+			raw, err := m.loadBytes(ctx, imgData)
 			if err != nil {
 				return SendResult{}, fmt.Errorf("card %d image load: %w", i+1, err)
 			}
@@ -886,7 +922,7 @@ func (m *Manager) SendMedia(ctx context.Context, account, to, kind, data, captio
 	if err != nil {
 		return "", err
 	}
-	raw, err := loadBytes(ctx, data)
+	raw, err := m.loadBytes(ctx, data)
 	if err != nil {
 		return "", err
 	}
@@ -1361,7 +1397,7 @@ func (m *Manager) prep(ctx context.Context, account, to, data string) (*whatsmeo
 	if err != nil {
 		return nil, types.JID{}, nil, err
 	}
-	raw, err := loadBytes(ctx, data)
+	raw, err := m.loadBytes(ctx, data)
 	if err != nil {
 		return nil, types.JID{}, nil, err
 	}
@@ -1662,6 +1698,9 @@ func (m *Manager) acct(account string) string {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.strict {
+		return ""
+	}
 	// store keys chats/messages by the full account JID string; resolve via client
 	if cli := m.clients[m.def]; cli != nil && cli.Store.ID != nil {
 		return cli.Store.ID.String()
@@ -2153,8 +2192,11 @@ func resolveJIDs(items []string) ([]types.JID, error) {
 	return out, nil
 }
 
-func loadBytes(ctx context.Context, data string) ([]byte, error) {
+func (m *Manager) loadBytes(ctx context.Context, data string) ([]byte, error) {
 	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		if m.fetchURL != nil {
+			return m.fetchURL(ctx, data)
+		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, data, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

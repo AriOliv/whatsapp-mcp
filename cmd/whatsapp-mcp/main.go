@@ -18,15 +18,21 @@ import (
 
 	"github.com/AriOliv/whatsapp-mcp/internal/config"
 	"github.com/AriOliv/whatsapp-mcp/internal/formweb"
+	"github.com/AriOliv/whatsapp-mcp/internal/gateway"
 	"github.com/AriOliv/whatsapp-mcp/internal/httpapi"
 	"github.com/AriOliv/whatsapp-mcp/internal/mcpserver"
 	"github.com/AriOliv/whatsapp-mcp/internal/oauth"
+	"github.com/AriOliv/whatsapp-mcp/internal/safehttp"
 	"github.com/AriOliv/whatsapp-mcp/internal/store"
 	"github.com/AriOliv/whatsapp-mcp/internal/wa"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(err)
+	}
+	gatewayMode := cfg.Mode == config.ModeHTTP && cfg.AuthMode == config.AuthGateway
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -38,7 +44,12 @@ func main() {
 		fatal(err)
 	}
 
-	mgr, err := wa.New(ctx, db, cfg.IsPostgres(), st, cfg.DeviceName)
+	var waOpts []wa.Option
+	if gatewayMode {
+		fetcher := safehttp.New(safehttp.Options{AllowedHosts: gateway.ParseDomains(cfg.MediaAllowedHosts)})
+		waOpts = append(waOpts, wa.WithStrictAccounts(), wa.WithHistorySyncDefaultOff(), wa.WithMediaFetcher(fetcher.Fetch))
+	}
+	mgr, err := wa.New(ctx, db, cfg.IsPostgres(), st, cfg.DeviceName, waOpts...)
 	if err != nil {
 		fatal(err)
 	}
@@ -64,7 +75,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "warning: client not fully ready after 30s")
 		}
 		own := mgr.DefaultNumber()
-		id, serr := mgr.SendText(ctx, "", own, "✅ Smoke test: whatsmeow MCP pareado — enviando e recebendo (Avenia).")
+		id, serr := mgr.SendText(ctx, "", own, "✅ Smoke test: whatsmeow MCP pareado — enviando e recebendo.")
 		if serr != nil {
 			fmt.Printf("SEND_ERROR=%v\n", serr)
 		} else {
@@ -87,6 +98,13 @@ func main() {
 		fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "connected %d WhatsApp account(s)\n", n)
+
+	if gatewayMode {
+		if err := serveGateway(ctx, cfg, st, mgr); err != nil {
+			fatal(err)
+		}
+		return
+	}
 
 	srv := mcpserver.Build(mgr)
 
@@ -149,6 +167,41 @@ func main() {
 			fatal(err)
 		}
 	}
+}
+
+// serveGateway runs gateway mode: the only routes are /mcp behind the
+// gateway's JWT and a /healthz that lists nothing.
+func serveGateway(ctx context.Context, cfg config.Config, st *store.Store, mgr *wa.Manager) error {
+	if cfg.GatewayJWKSURL == "" {
+		return fmt.Errorf("GATEWAY_JWKS_URL is required in gateway mode")
+	}
+	verifier, err := gateway.NewVerifier(gateway.NewJWKS(cfg.GatewayJWKSURL), cfg.GatewayJWTIssuer,
+		cfg.GatewayJWTAudience, gateway.ParseDomains(cfg.AllowedEmailDomains))
+	if err != nil {
+		return fmt.Errorf("gateway mode: %w (set GATEWAY_JWT_ISSUER, GATEWAY_JWT_AUDIENCE, ALLOWED_EMAIL_DOMAINS)", err)
+	}
+	for _, init := range []func(context.Context) error{st.InitOwners, st.InitForms, st.InitOutbox} {
+		if err := init(ctx); err != nil {
+			return err
+		}
+	}
+	srv := mcpserver.BuildGateway(mgr, mcpserver.Gateway{
+		Accounts: st,
+		Pairing:  gateway.NewPairing(st, mgr),
+		Limiter:  mcpserver.NewSendLimiter(cfg.SendRatePerMinute, cfg.SendRateBurst),
+	})
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	httpSrv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           gateway.NewMux(verifier, mcpHandler),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { <-ctx.Done(); _ = httpSrv.Close() }()
+	fmt.Fprintf(os.Stderr, "HTTP MCP (gateway auth) on :%s/mcp\n", cfg.Port)
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 func fatal(err error) {

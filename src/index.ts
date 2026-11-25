@@ -2,7 +2,7 @@
 /**
  * evolution-api-mcp — MCP server wrapping the Evolution API (Node/Baileys).
  *
- * Connection design inspired by avenia-internal-mcp: a declarative tool array
+ * Connection design inspired by a sibling internal MCP server: a declarative tool array
  * (tools.ts) + a generic HTTP dispatcher (dispatch.ts) + a transport-agnostic
  * credential provider (credentials.ts). This entrypoint wires those into an
  * McpServer over stdio.

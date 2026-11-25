@@ -11,7 +11,7 @@
   },
   "servers": [
     {
-      "url": "https://whatsapp.avenia.tech",
+      "url": "https://mcp.example.com",
       "description": "Produção"
     },
     {
@@ -63,8 +63,8 @@
                 "$ref": "#/components/schemas/SendRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "text": "Olá! 👋"
               }
             }
@@ -112,11 +112,11 @@
                 "$ref": "#/components/schemas/SendButtonsRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "title": "Pedido #123",
                 "text": "Confirma o pedido?",
-                "footer": "Avenia",
+                "footer": "Example",
                 "buttons": [
                   {
                     "type": "quick_reply",
@@ -131,7 +131,7 @@
                   {
                     "type": "url",
                     "text": "Ver detalhes",
-                    "url": "https://avenia.io"
+                    "url": "https://example.com"
                   }
                 ],
                 "fallbackText": true
@@ -181,8 +181,8 @@
                 "$ref": "#/components/schemas/SendListRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "text": "Escolha o tipo de conta",
                 "buttonText": "Ver opções",
                 "sections": [
@@ -248,8 +248,8 @@
                 "$ref": "#/components/schemas/SendFormRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "title": "Cadastro",
                 "description": "Leva 1 minuto.",
                 "text": "Toque no botão para preencher seu cadastro.",
@@ -328,7 +328,7 @@
             "schema": {
               "type": "string",
               "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-              "example": "5511915044043"
+              "example": "5511900000003"
             }
           },
           {
@@ -383,8 +383,8 @@
                 "$ref": "#/components/schemas/PresenceRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "state": "composing"
               }
             }
@@ -431,8 +431,8 @@
                 "$ref": "#/components/schemas/ReadRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "chat": "5521967582535",
+                "account": "5511900000003",
+                "chat": "5511900000001",
                 "ids": [
                   "3EB0BEC5D8F5711BA7090C"
                 ]
@@ -482,7 +482,7 @@
             "schema": {
               "type": "string",
               "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-              "example": "5511915044043"
+              "example": "5511900000003"
             }
           },
           {
@@ -560,7 +560,7 @@
             "schema": {
               "type": "string",
               "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-              "example": "5511915044043"
+              "example": "5511900000003"
             }
           }
         ],
@@ -726,12 +726,12 @@
                 "$ref": "#/components/schemas/SendCarouselRequest"
               },
               "example": {
-                "account": "5511915044043",
-                "to": "5521967582535",
+                "account": "5511900000003",
+                "to": "5511900000001",
                 "text": "Escolha um produto:",
                 "cards": [
                   {
-                    "title": "BRLA → Dólar",
+                    "title": "Real → Dólar",
                     "body": "Conversão instantânea",
                     "buttons": [
                       {
@@ -820,10 +820,10 @@
               "examples": {
                 "texto": {
                   "value": {
-                    "account": "5511915044043",
+                    "account": "5511900000003",
                     "id": "3EB0A1",
-                    "from": "5521967582535",
-                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "from": "5511900000001",
+                    "from_jid": "5511900000001@s.whatsapp.net",
                     "push_name": "Ari",
                     "ts": 1791245694473,
                     "type": "text",
@@ -832,10 +832,10 @@
                 },
                 "botao": {
                   "value": {
-                    "account": "5511915044043",
+                    "account": "5511900000003",
                     "id": "3EB0A2",
-                    "from": "5521967582535",
-                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "from": "5511900000001",
+                    "from_jid": "5511900000001@s.whatsapp.net",
                     "ts": 1791245694473,
                     "type": "button_reply",
                     "text": "Confirmar",
@@ -844,10 +844,10 @@
                 },
                 "formulario": {
                   "value": {
-                    "account": "5511915044043",
+                    "account": "5511900000003",
                     "id": "frm_aW6W_sId6ngz",
-                    "from": "5521967582535",
-                    "from_jid": "5521967582535@s.whatsapp.net",
+                    "from": "5511900000001",
+                    "from_jid": "5511900000001@s.whatsapp.net",
                     "ts": 1791245797181,
                     "type": "form_submit",
                     "text": "Cadastro",
@@ -1002,12 +1002,12 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "to": {
             "type": "string",
             "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
-            "example": "5521967582535"
+            "example": "5511900000001"
           },
           "text": {
             "type": "string",
@@ -1086,12 +1086,12 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "to": {
             "type": "string",
             "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
-            "example": "5521967582535"
+            "example": "5511900000001"
           },
           "text": {
             "type": "string"
@@ -1178,12 +1178,12 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "to": {
             "type": "string",
             "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
-            "example": "5521967582535"
+            "example": "5511900000001"
           },
           "text": {
             "type": "string"
@@ -1277,12 +1277,12 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "to": {
             "type": "string",
             "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
-            "example": "5521967582535"
+            "example": "5511900000001"
           },
           "title": {
             "type": "string",
@@ -1406,12 +1406,12 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "to": {
             "type": "string",
             "description": "Destinatário: número (dígitos) ou JID completo (ex. 5521...@s.whatsapp.net, ...@g.us).",
-            "example": "5521967582535"
+            "example": "5511900000001"
           },
           "state": {
             "type": "string",
@@ -1434,7 +1434,7 @@
           "account": {
             "type": "string",
             "description": "Conta (número pareado) que envia, só dígitos E.164 sem +. Precisa estar em GATEWAY_ACCOUNTS.",
-            "example": "5511915044043"
+            "example": "5511900000003"
           },
           "chat": {
             "type": "string",

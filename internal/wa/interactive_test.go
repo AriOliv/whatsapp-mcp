@@ -19,7 +19,7 @@ func TestBuildButtonsMessage(t *testing.T) {
 		Footer: "rodapé",
 		Buttons: []Button{
 			{Type: "quick_reply", Text: "Sim", ID: "yes"},
-			{Type: "url", Text: "Site", URL: "https://avenia.io"},
+			{Type: "url", Text: "Site", URL: "https://example.com"},
 			{Type: "call", Text: "Ligar", Phone: "+55 11 99999-0000"},
 			{Type: "copy", Text: "Copiar PIX", Code: "chave-pix"},
 		},
@@ -46,7 +46,7 @@ func TestBuildButtonsMessage(t *testing.T) {
 	}
 	want := []struct{ name, key, val string }{
 		{"quick_reply", "id", "yes"},
-		{"cta_url", "url", "https://avenia.io"},
+		{"cta_url", "url", "https://example.com"},
 		{"cta_call", "phone_number", "+55 11 99999-0000"},
 		{"cta_copy", "copy_code", "chave-pix"},
 	}
@@ -283,11 +283,11 @@ func TestBuildCarouselMessage(t *testing.T) {
 	spec := CarouselSpec{
 		Text:   "Confira as opções:",
 		Title:  "Menu de Câmbio",
-		Footer: "Avenia Direct",
+		Footer: "Example Direct",
 		Cards: []CarouselCard{
 			{
 				Title:  "Pix In",
-				Body:   "Deposite BRL via Pix e receba BRLA na hora",
+				Body:   "Deposite via Pix e receba na hora",
 				Footer: "Sem taxa",
 				Buttons: []Button{
 					{Type: "quick_reply", Text: "Receber Pix", ID: "pix_in"},
@@ -299,7 +299,7 @@ func TestBuildCarouselMessage(t *testing.T) {
 				Footer: "Instantâneo",
 				Buttons: []Button{
 					{Type: "quick_reply", Text: "Enviar Pix", ID: "pix_out"},
-					{Type: "url", Text: "Ajuda", URL: "https://avenia.io"},
+					{Type: "url", Text: "Ajuda", URL: "https://example.com"},
 				},
 			},
 		},
@@ -318,7 +318,7 @@ func TestBuildCarouselMessage(t *testing.T) {
 	if im.GetHeader().GetTitle() != "Menu de Câmbio" {
 		t.Fatalf("header = %q", im.GetHeader().GetTitle())
 	}
-	if im.GetFooter().GetText() != "Avenia Direct" {
+	if im.GetFooter().GetText() != "Example Direct" {
 		t.Fatalf("footer = %q", im.GetFooter().GetText())
 	}
 	cm := im.GetCarouselMessage()
@@ -332,7 +332,7 @@ func TestBuildCarouselMessage(t *testing.T) {
 		t.Fatalf("card type = %v", cm.GetCarouselCardType())
 	}
 	c1 := cm.GetCards()[0]
-	if c1.GetHeader().GetTitle() != "Pix In" || c1.GetBody().GetText() != "Deposite BRL via Pix e receba BRLA na hora" {
+	if c1.GetHeader().GetTitle() != "Pix In" || c1.GetBody().GetText() != "Deposite via Pix e receba na hora" {
 		t.Fatalf("card 1 header/body mismatch: %+v", c1)
 	}
 	btns1 := c1.GetNativeFlowMessage().GetButtons()

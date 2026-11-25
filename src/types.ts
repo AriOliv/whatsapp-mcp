@@ -1,7 +1,7 @@
 /**
  * Declarative tool + credential abstractions for the Evolution API MCP.
  *
- * Mirrors the avenia-internal-mcp design: each tool is a plain data object that
+ * Mirrors a sibling internal MCP server's design: each tool is a plain data object that
  * describes its MCP schema *and* how to turn arguments into an HTTP request. A
  * single generic dispatcher (see dispatch.ts) executes any tool from its
  * definition, so adding endpoints means appending to an array — no per-tool code.
@@ -47,7 +47,7 @@ export interface McpToolDefinition {
 /**
  * Sources/persists Evolution API credentials, decoupled from the transport — the
  * stdio provider reads env + a file; an HTTP provider (future) could read
- * per-request headers. Analogous to avenia's TokenProvider.
+ * per-request headers. Analogous to a TokenProvider.
  */
 export interface CredentialProvider {
   getBaseUrl(): string;

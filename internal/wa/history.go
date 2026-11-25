@@ -88,7 +88,7 @@ func (m *Manager) enqueueHistorySync(account string, cli *whatsmeow.Client, data
 }
 
 func (m *Manager) processHistorySync(job historyJob) {
-	if m.store == nil || job.data == nil || job.account == "" {
+	if m.store == nil || job.data == nil || job.account == "" || m.isPurged(job.account) {
 		return
 	}
 	pushNames := make(map[string]string, len(job.data.GetPushnames()))

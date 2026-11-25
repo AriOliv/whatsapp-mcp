@@ -50,7 +50,7 @@ func logToolFailures(next mcp.MethodHandler) mcp.MethodHandler {
 }
 
 // maskAccount redacts the middle digits of an account phone number (e.g.
-// "5521967582535" -> "5521…2535") so logs can correlate per-account failures
+// "5511900000001" -> "5511…0001") so logs can correlate per-account failures
 // without exposing full numbers.
 func maskAccount(a string) string {
 	a = strings.TrimSpace(a)

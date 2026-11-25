@@ -96,28 +96,28 @@ func TestLoggedOutMarkerSurvivesAndClears(t *testing.T) {
 	st := newTestStore(t)
 	when := time.Now().Truncate(time.Millisecond)
 
-	if err := st.MarkLoggedOut(ctx, "5511998362963", "LoggedOut", when); err != nil {
+	if err := st.MarkLoggedOut(ctx, "5511900000004", "LoggedOut", when); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	marks, err := st.LoggedOutAccounts(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if got, ok := marks["5511998362963"]; !ok {
+	if got, ok := marks["5511900000004"]; !ok {
 		t.Fatalf("marker must persist, got %+v", marks)
 	} else if !got.Equal(when) {
 		t.Fatalf("timestamp should round-trip: want %s, got %s", when, got)
 	}
 
 	// Re-logging the same account must update it, not duplicate it.
-	if err := st.MarkLoggedOut(ctx, "5511998362963", "LoggedOut", when.Add(time.Hour)); err != nil {
+	if err := st.MarkLoggedOut(ctx, "5511900000004", "LoggedOut", when.Add(time.Hour)); err != nil {
 		t.Fatalf("re-mark: %v", err)
 	}
 	if marks, _ = st.LoggedOutAccounts(ctx); len(marks) != 1 {
 		t.Fatalf("want 1 row after re-mark, got %d", len(marks))
 	}
 
-	if err := st.ClearLoggedOut(ctx, "5511998362963"); err != nil {
+	if err := st.ClearLoggedOut(ctx, "5511900000004"); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if marks, _ = st.LoggedOutAccounts(ctx); len(marks) != 0 {

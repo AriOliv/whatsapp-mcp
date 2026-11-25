@@ -1,7 +1,7 @@
 /**
  * File+env credential provider for the stdio transport (single user/dev).
  *
- * Inspired by avenia-internal-mcp's FileTokenProvider: env vars seed the
+ * Inspired by the FileTokenProvider pattern of a sibling internal MCP server: env vars seed the
  * credentials, and the active instance name is persisted to ~/.evoapi-mcp.json so
  * it survives restarts.
  */
