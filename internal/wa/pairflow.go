@@ -112,13 +112,24 @@ func (m *Manager) Flow(flowID string) (*PairFlow, bool) {
 	return f, ok
 }
 
-// EndFlow cancels and forgets a pairing flow (call after success/abandon).
+// EndFlow cancels and forgets a pairing flow (call after success/abandon). A
+// flow that did not pair also has its websocket closed; a paired one keeps its
+// client, which by then serves the account.
 func (m *Manager) EndFlow(flowID string) {
 	m.mu.Lock()
 	f := m.flows[flowID]
 	delete(m.flows, flowID)
 	m.mu.Unlock()
-	if f != nil && f.cancel != nil {
+	if f == nil {
+		return
+	}
+	if f.cancel != nil {
 		f.cancel()
+	}
+	f.mu.Lock()
+	cli, paired := f.cli, f.state == "open"
+	f.mu.Unlock()
+	if cli != nil && !paired {
+		cli.Disconnect()
 	}
 }

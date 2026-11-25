@@ -26,6 +26,12 @@ func WithMediaFetcher(fetch func(ctx context.Context, url string) ([]byte, error
 	return func(m *Manager) { m.fetchURL = fetch }
 }
 
+// WithPurgeHook runs fn for every account whose data is deleted, so state kept
+// outside this package (OAuth refresh tokens) goes with it.
+func WithPurgeHook(fn func(ctx context.Context, account string) error) Option {
+	return func(m *Manager) { m.purgeHook = fn }
+}
+
 func historySyncOff(envVal string, defaultOff bool) bool {
 	if strings.TrimSpace(envVal) == "" {
 		return defaultOff
