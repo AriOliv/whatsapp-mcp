@@ -66,8 +66,28 @@ type claims struct {
 	Scope string `json:"scope"`
 }
 
-// Verify validates raw and returns the caller's identity.
+// Verify validates raw and returns the caller's identity. The token must name
+// a user: sub has to be an email in an allowed domain.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
+	c, err := v.parse(ctx, raw)
+	if err != nil {
+		return Identity{}, err
+	}
+	email, err := v.ownerEmail(c.Subject)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{Email: email, Expires: c.ExpiresAt.Time, Scopes: strings.Fields(c.Scope)}, nil
+}
+
+// VerifyGateway checks that raw was minted by the gateway (signature, issuer,
+// audience, expiry) without requiring it to name a user.
+func (v *Verifier) VerifyGateway(ctx context.Context, raw string) error {
+	_, err := v.parse(ctx, raw)
+	return err
+}
+
+func (v *Verifier) parse(ctx context.Context, raw string) (claims, error) {
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
 		jwt.WithIssuer(v.issuer),
@@ -88,14 +108,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		}
 		return v.keys.Key(ctx, kid)
 	})
-	if err != nil {
-		return Identity{}, err
-	}
-	email, err := v.ownerEmail(c.Subject)
-	if err != nil {
-		return Identity{}, err
-	}
-	return Identity{Email: email, Expires: c.ExpiresAt.Time, Scopes: strings.Fields(c.Scope)}, nil
+	return c, err
 }
 
 // ownerEmail accepts sub only if it is a bare address in an allowed domain.

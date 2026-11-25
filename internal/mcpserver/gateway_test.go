@@ -188,6 +188,15 @@ func TestGatewayEndToEnd(t *testing.T) {
 	t.Cleanup(httpSrv.Close)
 
 	session := func(owner string) *mcp.ClientSession {
+		if owner == "" {
+			client := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil)
+			cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: httpSrv.URL + "/mcp"}, nil)
+			if err != nil {
+				t.Fatalf("connect without a token: %v", err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+			return cs
+		}
 		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 			"iss": "https://gw.test", "aud": "wa", "sub": owner,
 			"iat": time.Now().Unix(), "exp": time.Now().Add(time.Minute).Unix(),
@@ -250,6 +259,22 @@ func TestGatewayEndToEnd(t *testing.T) {
 	for _, hidden := range gatewayHiddenTools {
 		if names[hidden] {
 			t.Errorf("tool %s must be hidden in gateway mode", hidden)
+		}
+	}
+
+	// The gateway builds its catalog without a user: no token at all, or its
+	// own token whose sub is not an email. Listing must work, calling must not.
+	for _, caller := range []string{"", "litellm-proxy"} {
+		cs := session(caller)
+		listed, err := cs.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatalf("listing tools as %q must work: %v", caller, err)
+		}
+		if len(listed.Tools) != len(tools.Tools) {
+			t.Fatalf("catalog as %q has %d tools, a user sees %d", caller, len(listed.Tools), len(tools.Tools))
+		}
+		if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "whatsapp_connection_status"}); err == nil {
+			t.Fatalf("a tool call as %q must be refused", caller)
 		}
 	}
 }

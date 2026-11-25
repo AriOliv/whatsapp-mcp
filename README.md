@@ -126,7 +126,7 @@ The full contract is in [`openapi.json`](openapi.json) (OpenAPI 3.1): open it in
 
 ## Gateway auth mode (Go server)
 
-When the server runs behind an MCP gateway that already signs users in, set `MCP_MODE=http` and `MCP_AUTH_MODE=gateway`. The gateway must send `Authorization: Bearer <JWT>` on every MCP request, signed RS256 with a key published at its JWKS URL, carrying `kid` in the header and `iss`, `aud`, `exp` and `sub` (the user's email) in the claims. The built-in OAuth server, the login and pairing pages, `/api/*` and `/f/*` are not mounted in this mode. Only `/mcp` and `/healthz` exist, and `/healthz` returns `{"ok":true}` and nothing else.
+When the server runs behind an MCP gateway that already signs users in, set `MCP_MODE=http` and `MCP_AUTH_MODE=gateway`. The gateway must send `Authorization: Bearer <JWT>` on every MCP request, signed RS256 with a key published at its JWKS URL, carrying `kid` in the header and `iss`, `aud`, `exp` and `sub` (the user's email) in the claims. Every `tools/call` needs that user token. The gateway's own catalog and health traffic (`initialize`, `ping`, `notifications/*`, `tools/list`, alone or batched together, and session GET and DELETE) is served without one, and if it carries a token that token must still be a valid gateway token, whatever its `sub`. A batch that mixes `tools/call` with those methods needs the user token. The built-in OAuth server, the login and pairing pages, `/api/*` and `/f/*` are not mounted in this mode. Only `/mcp` and `/healthz` exist, and `/healthz` returns `{"ok":true}` and nothing else.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
