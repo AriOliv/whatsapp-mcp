@@ -124,6 +124,24 @@ Besides the per-user OAuth `/mcp`, HTTP mode can expose `/api/*` for one trusted
 
 The full contract is in [`openapi.json`](openapi.json) (OpenAPI 3.1): open it in [Swagger Editor](https://editor.swagger.io) or import it in Postman (*Import → File*), then set the bearer token on the collection. A test fails if a route is added without being documented there.
 
+## Gateway auth mode (Go server)
+
+When the server runs behind an MCP gateway that already signs users in, set `MCP_MODE=http` and `MCP_AUTH_MODE=gateway`. The gateway must send `Authorization: Bearer <JWT>` on every MCP request, signed RS256 with a key published at its JWKS URL, carrying `kid` in the header and `iss`, `aud`, `exp` and `sub` (the user's email) in the claims. The built-in OAuth server, the login and pairing pages, `/api/*` and `/f/*` are not mounted in this mode. Only `/mcp` and `/healthz` exist, and `/healthz` returns `{"ok":true}` and nothing else.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `MCP_AUTH_MODE` | yes | `gateway` (default `oauth`) |
+| `GATEWAY_JWKS_URL` | yes | The gateway's JWKS document, e.g. `https://gateway.example.com/.well-known/jwks.json`. Keys are cached and refetched (rate limited) when an unknown `kid` shows up |
+| `GATEWAY_JWT_ISSUER` | yes | Exact `iss` value |
+| `GATEWAY_JWT_AUDIENCE` | yes | Exact `aud` value |
+| `ALLOWED_EMAIL_DOMAINS` | yes | Comma-separated domains. `sub` must be an email whose domain matches one exactly |
+| `MEDIA_URL_ALLOWED_HOSTS` | no | Comma-separated hosts that media URLs may point to. `.example.com` also allows subdomains |
+| `SEND_RATE_PER_MINUTE` / `SEND_RATE_BURST` | no | Per-number send budget, default 20 per minute with bursts of 5 |
+| `WA_HISTORY_SYNC` | no | History sync is off by default in this mode. Set `on` to enable it |
+| `DATABASE_URL_FILE` | no | Path to a file holding the database URL, used when `DATABASE_URL` is unset (works in every mode) |
+
+Each user links their own number with the `whatsapp_connect` tool, which returns an 8-digit code to type under WhatsApp > Linked devices > Link with phone number. The number is bound to that user only after WhatsApp confirms the link, a number can belong to one user at most, and every other tool acts on the caller's bound number only. `whatsapp_connection_status` shows the state, and `whatsapp_disconnect` unlinks the device and deletes everything stored for that number. Media given by URL must be `https` and is refused if it resolves to a private, loopback, link-local or otherwise internal address
+
 ## Architecture
 
 ```
@@ -159,6 +177,8 @@ internal/
 ├── wa/                 # whatsmeow client registry, pairing, send/read helpers
 ├── store/              # our own chat/message history (whatsmeow keeps none)
 ├── oauth/              # OAuth 2.1 + per-user bearer (multi-tenant HTTP)
+├── gateway/            # gateway auth mode: JWT check, owner bindings, pairing
+├── safehttp/           # SSRF-safe fetcher for media given by URL
 └── mcpserver/
     ├── server.go       # the whatsapp_* tool catalog
     ├── view.go         # card payloads (wire contract for the app)
