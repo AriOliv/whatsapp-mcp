@@ -47,13 +47,13 @@ func TestValidateFormAnswers(t *testing.T) {
 	s := testSpec()
 	_ = validateFormSpec(&s)
 	ok, errs := validateFormAnswers(s, map[string][]string{
-		"nome": {"  Ari  "}, "cpf": {"529.982.247-25"}, "email": {"ari@avenia.io"}, "plano": {"pro"},
+		"nome": {"  Ari  "}, "cpf": {"529.982.247-25"}, "email": {"ana@example.com"}, "plano": {"pro"},
 		"canais": {"whatsapp", "email"}, "aceite": {"on"}, "nasc": {"1990-05-01"},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	want := map[string]string{"nome": "Ari", "cpf": "52998224725", "email": "ari@avenia.io", "plano": "pro",
+	want := map[string]string{"nome": "Ari", "cpf": "52998224725", "email": "ana@example.com", "plano": "pro",
 		"canais": "whatsapp, email", "aceite": "sim", "nasc": "1990-05-01"}
 	for k, v := range want {
 		if ok[k] != v {

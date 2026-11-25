@@ -65,7 +65,7 @@ func TestResolveContactInfoAndSenderNamesAcrossLIDAndPN(t *testing.T) {
 		},
 	}
 
-	acctJID := types.NewJID("5521967582535", types.DefaultUserServer)
+	acctJID := types.NewJID("5511900000001", types.DefaultUserServer)
 	cli := &whatsmeow.Client{
 		Store: &store.Device{
 			ID:       &acctJID,
@@ -74,7 +74,7 @@ func TestResolveContactInfoAndSenderNamesAcrossLIDAndPN(t *testing.T) {
 		},
 	}
 	m := &Manager{
-		clients:   map[string]*whatsmeow.Client{"5521967582535": cli},
+		clients:   map[string]*whatsmeow.Client{"5511900000001": cli},
 		loggedOut: map[string]time.Time{},
 		log:       waLog.Noop,
 	}
@@ -95,7 +95,7 @@ func TestResolveContactInfoAndSenderNamesAcrossLIDAndPN(t *testing.T) {
 	}
 
 	// 3. SenderNames resolves named @lid sender and formats unlisted @lid sender as +<phone>.
-	names := m.SenderNames(ctx, "5521967582535", []appstore.Message{
+	names := m.SenderNames(ctx, "5511900000001", []appstore.Message{
 		{ID: "m1", SenderJID: adLID.String()},
 		{ID: "m2", SenderJID: unlistedLID.String()},
 	})

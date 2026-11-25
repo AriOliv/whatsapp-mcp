@@ -75,7 +75,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "warning: client not fully ready after 30s")
 		}
 		own := mgr.DefaultNumber()
-		id, serr := mgr.SendText(ctx, "", own, "✅ Smoke test: whatsmeow MCP pareado — enviando e recebendo (Avenia).")
+		id, serr := mgr.SendText(ctx, "", own, "✅ Smoke test: whatsmeow MCP pareado — enviando e recebendo.")
 		if serr != nil {
 			fmt.Printf("SEND_ERROR=%v\n", serr)
 		} else {

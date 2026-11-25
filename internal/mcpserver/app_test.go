@@ -90,7 +90,7 @@ func TestViewsCarryTheirKind(t *testing.T) {
 
 func TestChatKindClassification(t *testing.T) {
 	for jid, want := range map[string]string{
-		"5521968865678@s.whatsapp.net": "dm",
+		"5511900000002@s.whatsapp.net": "dm",
 		"120363@g.us":                  "group",
 		"120363@newsletter":            "newsletter",
 		"status@broadcast":             "status",
@@ -178,7 +178,7 @@ func contains(xs []string, want string) bool {
 }
 
 func TestDonePopulatesStructuredContentForMCPApp(t *testing.T) {
-	v := newSentView("3EB0123", "5521967582535", "buttons", "Teste")
+	v := newSentView("3EB0123", "5511900000001", "buttons", "Teste")
 	res, _, err := done(v, nil)
 	if err != nil {
 		t.Fatalf("done returned err: %v", err)
@@ -200,8 +200,8 @@ func TestDonePopulatesStructuredContentForMCPApp(t *testing.T) {
 }
 
 func TestMaskAccountRedactsMiddleDigits(t *testing.T) {
-	if got := maskAccount("5521967582535"); got != "5521…2535" {
-		t.Fatalf("maskAccount(5521967582535) = %q, want 5521…2535", got)
+	if got := maskAccount("5511900000001"); got != "5511…0001" {
+		t.Fatalf("maskAccount(5511900000001) = %q, want 5511…0001", got)
 	}
 	if got := maskAccount(""); got != "default" {
 		t.Fatalf("maskAccount(\"\") = %q, want default", got)

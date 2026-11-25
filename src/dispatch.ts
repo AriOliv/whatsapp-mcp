@@ -1,7 +1,7 @@
 /**
  * Generic HTTP dispatcher: turns any McpToolDefinition + args into an Evolution
  * API call and returns an MCP CallToolResult. Ported from the evo-go MCP /
- * avenia-internal-mcp executeTool, adapted for Evolution API: a single `apikey`
+ * a sibling internal MCP server's executeTool, adapted for Evolution API: a single `apikey`
  * header and an auto-filled `{instance}` path segment.
  */
 import axios, { type AxiosError } from "axios";
@@ -112,7 +112,7 @@ export async function executeTool(
     const res = await axios(config);
 
     // Capture the name of a freshly created instance so it's immediately active
-    // (mirrors avenia persisting tokens after a successful login).
+    // (persisting tokens after a successful login).
     if (def.name === "evo_instance_create") {
       const name = res.data?.instance?.instanceName || res.data?.instance?.name;
       if (typeof name === "string" && name) await provider.setInstanceName(name);

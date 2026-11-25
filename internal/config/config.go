@@ -114,7 +114,7 @@ func Load() (Config, error) {
 		Port:       env("PORT", "3000"),
 		PublicURL:  strings.TrimRight(env("PUBLIC_URL", "http://localhost:3000"), "/"),
 		JWTSecret:  os.Getenv("MCP_JWT_SECRET"),
-		DeviceName: env("WA_DEVICE_NAME", "Avenia WhatsApp MCP"),
+		DeviceName: env("WA_DEVICE_NAME", "WhatsApp MCP"),
 
 		InboundWebhookURL:      os.Getenv("INBOUND_WEBHOOK_URL"),
 		InboundWebhookSecret:   os.Getenv("INBOUND_WEBHOOK_SECRET"),

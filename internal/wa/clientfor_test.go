@@ -65,11 +65,11 @@ func TestLookupClientNeverBlocks(t *testing.T) {
 func TestClientForLoggedOutAccountFailsFastAndSaysSo(t *testing.T) {
 	m := &Manager{
 		clients:   map[string]*whatsmeow.Client{},
-		loggedOut: map[string]time.Time{"5511998362963": time.Now()},
+		loggedOut: map[string]time.Time{"5511900000004": time.Now()},
 		log:       waLog.Noop,
 	}
 	start := time.Now()
-	_, err := m.clientFor(context.Background(), "5511998362963")
+	_, err := m.clientFor(context.Background(), "5511900000004")
 	if err == nil {
 		t.Fatal("want an error for a logged-out account")
 	}
@@ -87,7 +87,7 @@ func TestHealthReportsLoggedOutAccountAsNeedsRepair(t *testing.T) {
 	m := &Manager{
 		clients:            map[string]*whatsmeow.Client{},
 		perAccountConnects: map[string]int{},
-		loggedOut:          map[string]time.Time{"5511998362963": time.Now()},
+		loggedOut:          map[string]time.Time{"5511900000004": time.Now()},
 		log:                waLog.Noop,
 	}
 	accounts, _, _ := m.Health()
@@ -103,13 +103,13 @@ func TestHealthReportsLoggedOutAccountAsNeedsRepair(t *testing.T) {
 }
 
 func TestStaleCompanionLogoutDoesNotEvictActiveClient(t *testing.T) {
-	activeJID := types.NewADJID("5521967582535", 0, 37)
-	staleJID := types.NewADJID("5521967582535", 0, 35)
+	activeJID := types.NewADJID("5511900000001", 0, 37)
+	staleJID := types.NewADJID("5511900000001", 0, 35)
 	activeCli := &whatsmeow.Client{Store: &store.Device{ID: &activeJID}}
 	staleCli := &whatsmeow.Client{Store: &store.Device{ID: &staleJID}}
 
 	m := &Manager{
-		clients:            map[string]*whatsmeow.Client{"5521967582535": activeCli},
+		clients:            map[string]*whatsmeow.Client{"5511900000001": activeCli},
 		perAccountConnects: map[string]int{},
 		loggedOut:          map[string]time.Time{},
 		log:                waLog.Noop,
@@ -118,26 +118,26 @@ func TestStaleCompanionLogoutDoesNotEvictActiveClient(t *testing.T) {
 	// Stale companion device fires LoggedOut -> must NOT remove activeCli or mark loggedOut.
 	m.handler(staleCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
 
-	if got := m.clients["5521967582535"]; got != activeCli {
+	if got := m.clients["5511900000001"]; got != activeCli {
 		t.Fatalf("active client was evicted by stale companion logout: got %v, want %v", got, activeCli)
 	}
-	if _, marked := m.loggedOut["5521967582535"]; marked {
+	if _, marked := m.loggedOut["5511900000001"]; marked {
 		t.Fatal("account must not be marked loggedOut when a different client is active")
 	}
 
 	// Active client itself fires LoggedOut -> now the account transitions to loggedOut.
 	m.handler(activeCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
-	if got := m.clients["5521967582535"]; got != nil {
+	if got := m.clients["5511900000001"]; got != nil {
 		t.Fatalf("expected active client to be removed on its own logout, got %v", got)
 	}
-	if _, marked := m.loggedOut["5521967582535"]; !marked {
+	if _, marked := m.loggedOut["5511900000001"]; !marked {
 		t.Fatal("expected account to be marked loggedOut when active client logs out")
 	}
 }
 
 func TestRegisterStaleLastAndLoggedOutKeepsActiveClient(t *testing.T) {
-	activeJID := types.NewADJID("5521967582535", 0, 37)
-	staleJID := types.NewADJID("5521967582535", 0, 35)
+	activeJID := types.NewADJID("5511900000001", 0, 37)
+	staleJID := types.NewADJID("5511900000001", 0, 35)
 	activeDev := &store.Device{ID: &activeJID, Log: waLog.Noop}
 	staleDev := &store.Device{ID: &staleJID, Log: waLog.Noop}
 
@@ -167,16 +167,16 @@ func TestRegisterStaleLastAndLoggedOutKeepsActiveClient(t *testing.T) {
 	m.register(activeCli)
 	m.register(staleCli) // stale registered LAST
 
-	if got := m.clients["5521967582535"]; got != activeCli {
+	if got := m.clients["5511900000001"]; got != activeCli {
 		t.Fatalf("register(stale) overwrote newer active client: got %v, want %v", got, activeCli)
 	}
 
 	m.handler(staleCli)(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
 
-	if got := m.clients["5521967582535"]; got != activeCli {
+	if got := m.clients["5511900000001"]; got != activeCli {
 		t.Fatalf("stale LoggedOut evicted active client: got %v, want %v", got, activeCli)
 	}
-	if _, marked := m.loggedOut["5521967582535"]; marked {
+	if _, marked := m.loggedOut["5511900000001"]; marked {
 		t.Fatal("account must not be marked loggedOut after stale companion logout")
 	}
 }
@@ -187,10 +187,10 @@ func TestChatNameUnknownNumberReturnsEmpty(t *testing.T) {
 		loggedOut: map[string]time.Time{},
 		log:       waLog.Noop,
 	}
-	if got := m.ChatName(context.Background(), "5521967582535", "5511999990000"); got != "" {
+	if got := m.ChatName(context.Background(), "5511900000001", "5511999990000"); got != "" {
 		t.Fatalf("ChatName for unknown number = %q, want empty string", got)
 	}
-	if got := m.ChatName(context.Background(), "5521967582535", ""); got != "" {
+	if got := m.ChatName(context.Background(), "5511900000001", ""); got != "" {
 		t.Fatalf("ChatName for empty number = %q, want empty string", got)
 	}
 }

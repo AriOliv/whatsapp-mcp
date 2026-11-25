@@ -76,7 +76,7 @@ export function bytes(n: number): string {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** +55 21 96886-5678 from 5521968865678 (Brazilian shapes; passthrough otherwise). */
+/** +55 11 90000-0002 from 5511900000002 (Brazilian shapes; passthrough otherwise). */
 export function phone(digits: string): string {
   const d = String(digits ?? "").replace(/\D/g, "");
   if (!d) return "";

@@ -127,7 +127,7 @@ func TestSendButtonsAndList(t *testing.T) {
 	auth := "Bearer " + tok
 
 	body := `{"account":"5521","to":"5511","text":"Escolha","title":"T","footer":"F",
-		"buttons":[{"type":"quick_reply","text":"Sim","id":"sim"},{"type":"url","text":"Site","url":"https://avenia.io"}]}`
+		"buttons":[{"type":"quick_reply","text":"Sim","id":"sim"},{"type":"url","text":"Site","url":"https://example.com"}]}`
 	w := do(t, mux, "POST", "/api/send/buttons", auth, body)
 	if w.Code != 200 {
 		t.Fatalf("buttons: %d %s", w.Code, w.Body)
@@ -137,7 +137,7 @@ func TestSendButtonsAndList(t *testing.T) {
 	if res.ID != "BT1" || res.Fallback {
 		t.Fatalf("buttons result = %+v", res)
 	}
-	if got := f.buttons[0]; got.Title != "T" || got.Footer != "F" || len(got.Buttons) != 2 || got.Buttons[0].ID != "sim" || got.Buttons[1].URL != "https://avenia.io" {
+	if got := f.buttons[0]; got.Title != "T" || got.Footer != "F" || len(got.Buttons) != 2 || got.Buttons[0].ID != "sim" || got.Buttons[1].URL != "https://example.com" {
 		t.Fatalf("spec passed through = %+v", got)
 	}
 

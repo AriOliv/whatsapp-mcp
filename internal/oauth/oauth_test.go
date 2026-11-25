@@ -34,7 +34,7 @@ func TestRefreshRotationGraceAndIdempotency(t *testing.T) {
 	db := newTestDB(t)
 
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -85,7 +85,7 @@ func TestRefreshConcurrentProcessesReceiveSameSuccessor(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRefreshConcurrentProcessesReceiveSameSuccessor(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	h := NewHandlers(st, nil, "https://whatsapp.avenia.tech")
+	h := NewHandlers(st, nil, "https://mcp.example.com")
 	h.Register(mux, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -160,7 +160,7 @@ func TestRefreshReuseOutsideGraceRevokesFamily(t *testing.T) {
 	db := newTestDB(t)
 
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -225,14 +225,14 @@ func TestRefreshMigrationPreservesLegacyRows(t *testing.T) {
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO oauth_refresh_tokens (token, client_id, sub, resource, scopes, expires_at)
 		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		"legacy_tok_1", "wa_legacy", "5511888888888", "https://whatsapp.avenia.tech/mcp", `["mcp:tools"]`,
+		"legacy_tok_1", "wa_legacy", "5511888888888", "https://mcp.example.com/mcp", `["mcp:tools"]`,
 		t0.Add(RefreshTTL).UnixMilli(),
 	); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
 
 	now := t0
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init migration on legacy table: %v", err)
@@ -271,7 +271,7 @@ func TestRefreshExpiredAndUnlinkedDevice(t *testing.T) {
 	t0 := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	now := t0
 	paired := true
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return paired })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return paired })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -330,7 +330,7 @@ func TestRefreshPurge(t *testing.T) {
 
 	t0 := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	now := t0
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -350,7 +350,7 @@ func TestRefreshPurge(t *testing.T) {
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO oauth_refresh_tokens (token, client_id, sub, resource, scopes, expires_at, family_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		"expired_unconsumed", "wa_client", "5511999999992", "https://whatsapp.avenia.tech/mcp", `["mcp:tools"]`,
+		"expired_unconsumed", "wa_client", "5511999999992", "https://mcp.example.com/mcp", `["mcp:tools"]`,
 		t0.Add(60*time.Second).UnixMilli(), "expired_unconsumed",
 	); err != nil {
 		t.Fatalf("insert expired_unconsumed: %v", err)
@@ -389,7 +389,7 @@ func TestBearerGuard401AndResourceMetadataOnExpiredToken(t *testing.T) {
 
 	t0 := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	now := t0
-	st := NewStore(testJWTSecret, "https://whatsapp.avenia.tech", "https://whatsapp.avenia.tech/mcp", db, func(string) bool { return true })
+	st := NewStore(testJWTSecret, "https://mcp.example.com", "https://mcp.example.com/mcp", db, func(string) bool { return true })
 	st.nowFn = func() time.Time { return now }
 	if err := st.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -401,12 +401,12 @@ func TestBearerGuard401AndResourceMetadataOnExpiredToken(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	h := NewHandlers(st, nil, "https://whatsapp.avenia.tech")
+	h := NewHandlers(st, nil, "https://mcp.example.com")
 	h.Register(mux, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"sub": SubFromContext(r.Context())})
 	}))
 
-	const wantWWW = `Bearer resource_metadata="https://whatsapp.avenia.tech/.well-known/oauth-protected-resource/mcp"`
+	const wantWWW = `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"`
 
 	// 1. Missing token -> 401 + WWW-Authenticate resource_metadata.
 	rec := httptest.NewRecorder()
